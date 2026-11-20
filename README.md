@@ -6,6 +6,8 @@ A Home Assistant dashboard card in the style of the Energy distribution card, bu
 
 *Screenshot rendered with test data.*
 
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/xFirefliesx)
+
 ## Features
 
 - Grid, solar, battery, house, zones and devices as circles with animated flow dots
