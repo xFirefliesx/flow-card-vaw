@@ -1,0 +1,2314 @@
+const ST_ICONS = {
+  garage: ['mdi:garage', 'mdi:garage-open'],
+  window: ['mdi:window-closed', 'mdi:window-open'],
+  door: ['mdi:door-closed', 'mdi:door-open'],
+  lock: ['mdi:lock', 'mdi:lock-open-variant'],
+};
+const PALETTE = ['#9c27b0', '#ff5722', '#03a9f4', '#cddc39', '#009688', '#795548'];
+const VW = 620;
+const VH = 410;
+
+class FlowCardVAW extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+  }
+
+  setConfig(config) {
+    if (!config) throw new Error('Keine Konfiguration');
+    // leere Werte (z. B. "icon: null" aus dem Editor) wie nicht vorhanden behandeln, damit die Standardwerte gelten
+    const strip = (o) => {
+      if (Array.isArray(o)) return o.map(strip);
+      if (o && typeof o === 'object') {
+        const r = {};
+        Object.keys(o).forEach((k) => {
+          if (o[k] !== null && o[k] !== '') r[k] = strip(o[k]);
+        });
+        return r;
+      }
+      return o;
+    };
+    this._c = strip(config);
+    this._render();
+  }
+
+  // Visueller Editor in Home Assistant
+  static getConfigElement() {
+    return document.createElement('flow-card-vaw-editor');
+  }
+
+  static getStubConfig() {
+    return { grid: {}, solar: {}, battery: {}, home: {} };
+  }
+
+  getCardSize() {
+    return 6;
+  }
+
+  // Sections-Ansicht: standardmäßig volle Breite (per grid_options in der YAML änderbar)
+  getGridOptions() {
+    return { columns: 12, min_columns: 6, rows: 'auto' };
+  }
+
+  connectedCallback() {
+    this._onFsChange = () => {
+      // Vollbild per Esc / Browser verlassen
+      if (this._fs === 'native' && !(document.fullscreenElement || document.webkitFullscreenElement)) {
+        this._fs = null;
+        this._applyFs();
+      }
+    };
+    this._onKey = (e) => {
+      if (e.key === 'Escape' && this._fs === 'overlay') this._setFs(false);
+    };
+    document.addEventListener('fullscreenchange', this._onFsChange);
+    document.addEventListener('webkitfullscreenchange', this._onFsChange);
+    window.addEventListener('keydown', this._onKey);
+    // Ruhemodus mit Zeitfenster: einmal pro Minute prüfen
+    this._tickN = 0;
+    this._tick = setInterval(() => {
+      this._tickN++;
+      if (this._stLive) this._update(); // Status zählt Sekunden bzw. wartet auf warn_after
+      else if (this._tickN % 60 === 0 && this._c && this._c.calm && (this._c.calm.from || this._c.calm.to)) this._update();
+    }, 1000);
+  }
+
+  disconnectedCallback() {
+    clearInterval(this._tick);
+    document.removeEventListener('fullscreenchange', this._onFsChange);
+    document.removeEventListener('webkitfullscreenchange', this._onFsChange);
+    window.removeEventListener('keydown', this._onKey);
+    if (this._fs === 'native') {
+      try {
+        (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
+      } catch (e) { /* ignorieren */ }
+    }
+    this._fs = null;
+  }
+
+  _toggleFs() {
+    this._setFs(!this._fs);
+  }
+
+  // Vollbild: zuerst echtes Browser-Vollbild; wo das nicht geht (z. B. manche Apps/iPhone), Vollbild-Overlay in der Seite
+  _setFs(on) {
+    const card = this.shadowRoot.querySelector('ha-card');
+    if (!card) return;
+    if (!on) {
+      const wasNative = this._fs === 'native';
+      this._fs = null;
+      if (wasNative && (document.fullscreenElement || document.webkitFullscreenElement)) {
+        try {
+          const r = (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+          if (r && r.catch) r.catch(() => {});
+        } catch (e) { /* ignorieren */ }
+      }
+      this._applyFs();
+      return;
+    }
+    const req = card.requestFullscreen || card.webkitRequestFullscreen;
+    this._fs = 'overlay';
+    this._applyFs();
+    if (req) {
+      try {
+        const r = req.call(card);
+        if (r && r.then) {
+          r.then(() => {
+            this._fs = 'native';
+          }).catch(() => {
+            this._fs = 'overlay';
+          });
+        } else {
+          this._fs = 'native';
+        }
+      } catch (e) {
+        this._fs = 'overlay';
+      }
+    }
+  }
+
+  _applyFs() {
+    const card = this.shadowRoot && this.shadowRoot.querySelector('ha-card');
+    if (!card) return;
+    card.classList.toggle('fs', !!this._fs);
+    const ic = this.shadowRoot.querySelector('.fsbtn ha-icon');
+    if (ic) ic.setAttribute('icon', this._fs ? 'mdi:fullscreen-exit' : 'mdi:fullscreen');
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._update();
+  }
+
+  _render() {
+    const c = this._c;
+    // Optik-Optionen (alle einzeln abschaltbar)
+    const optOn = (k) => c[k] !== false;
+    const OPT = {
+      lineW: optOn('line_width'),
+      lineMax: Math.max(3, Number(c.line_width_max) || 6),
+      glow: optOn('glow'),
+      pulse: optOn('pulse'),
+      pulseW: c.pulse_above_w !== undefined ? Number(c.pulse_above_w) : 1000,
+      grad: optOn('gradient'),
+      tap: optOn('tap_action'),
+      lim: optOn('limit_colors'),
+      zoom: optOn('zoom'),
+      zmax: Math.max(1.5, Math.min(10, Number(c.zoom_max) || 4)),
+      ns: c.number_scale !== undefined ? Math.max(0.5, Math.min(1.6, Number(c.number_scale) || 1)) : 1,
+    };
+    this._o = OPT;
+    const L0 = c.limits && typeof c.limits === 'object' ? c.limits : {};
+    const numOr = (v, d) => (v !== undefined && v !== null && v !== '' && !isNaN(Number(v)) ? Number(v) : d);
+    this._lim = {
+      vmin: numOr(L0.voltage_min, 207),
+      vmax: numOr(L0.voltage_max, 253),
+      imax: numOr(L0.current_max, null),
+      fmin: numOr(L0.frequency_min, 49.8),
+      fmax: numOr(L0.frequency_max, 50.2),
+      color: L0.color || '#e53935',
+    };
+    // Schalter am Kreis (switch: switch.xyz): kleiner Ein/Aus-Knopf oben rechts am Kreis
+    this._sw = [];
+    let swSvg = '';
+    const swBtn = (key, o, x, y, r, col) => {
+      const rr = r >= 40 ? 12.5 : r >= 30 ? 11 : 9;
+      this._sw.push({ key, entity: o.switch, confirm: o.switch_confirm === true, name: o.name });
+      const k = (rr / 11).toFixed(2);
+      swSvg += `<g class="sw un" id="sw_${key}" data-sw="${key}" transform="translate(${(x + r * 0.74).toFixed(1)} ${(y - r * 0.68).toFixed(1)})" style="--sc:${col}"><title>${String(o.name || 'Schalter').replace(/</g, '&lt;')} schalten</title><circle r="${rr + 5}" fill="transparent"/><circle class="swb" r="${rr}"/><path class="swi" transform="scale(${k})" d="M-3.6,-3.8 A5.2,5.2 0 1 0 3.6,-3.8 M0,-6.2 V-0.8"/></g>`;
+    };
+    // Farbverläufe für die Kreise (eine Definition pro Farbe)
+    const gradDefs = new Map();
+    const gradId = (col) => {
+      if (!gradDefs.has(col)) gradDefs.set(col, 'vg' + gradDefs.size);
+      return gradDefs.get(col);
+    };
+    const devs = c.devices || [];
+    const kidsCfg = c.solar && Array.isArray(c.solar.children) ? c.solar.children.slice(0, 10) : [];
+    // Zählerstände (kWh) unter dem Netz-Kreis: grid.meter {import, export}
+    const gridMeter = c.grid && c.grid.meter && typeof c.grid.meter === 'object' ? c.grid.meter : null;
+    this._gridMeter = gridMeter;
+    // 15-Minuten-Spitze (Netzentgelte): grid.peak {max, live, last}
+    const peakCfg = c.grid && c.grid.peak && typeof c.grid.peak === 'object' ? c.grid.peak : null;
+    this._peakCfg = peakCfg;
+    // Batterien als kleine Kreise: battery.soc (Gesamt) und/oder battery.children (einzelne Batterien)
+    const bc = c.battery || {};
+    const batKidsCfg = [];
+    if (bc.soc && !bc.soc_in_circle) batKidsCfg.push({ soc: bc.soc });
+    (Array.isArray(bc.children) ? bc.children : []).forEach((x) => batKidsCfg.push(typeof x === 'string' ? { soc: x } : { ...x }));
+    batKidsCfg.splice(10);
+    // Status (Garagentor, Fenster, Türen): status [{name, entity|entities, show, at, kind, warn_after, ...}]
+    const stCfg = (Array.isArray(c.status) ? c.status : [])
+      .slice(0, 12)
+      .map((e) => {
+        const o = typeof e === 'string' ? { entity: e } : { ...e };
+        const ents = [];
+        if (o.entity) ents.push({ entity: o.entity });
+        (Array.isArray(o.entities) ? o.entities : []).forEach((x) => ents.push(typeof x === 'string' ? { entity: x } : { ...x }));
+        o.ents = ents.filter((x) => x.entity).slice(0, 16);
+        o.show = Array.isArray(o.show) ? o.show : o.show ? [o.show] : ['header'];
+        return o;
+      })
+      .filter((o) => o.ents.length);
+    this._st = stCfg;
+    const batRingOn = !!c.battery && bc.soc_ring !== false && !!(bc.soc || batKidsCfg.length); // Ring mit dem Ladestand
+    const solRingOn = !!(c.solar && c.solar.max_power); // Ring mit der Auslastung
+    this._solMax = c.solar ? c.solar.max_power : null;
+    // Netz: einzelne Phasen (L1/L2/L3) als kleine Kreise: grid.phases [{name, power, current, voltage}]
+    const gridPhCfg = c.grid && Array.isArray(c.grid.phases)
+      ? c.grid.phases.slice(0, 6).map((x, i) => {
+        const o = typeof x === 'string' ? { power: x } : { ...x };
+        if (o.name === undefined) o.name = 'L' + (i + 1);
+        return o;
+      })
+      : [];
+    // Zonen (z. B. Stockwerke) mit eigenen Geräten
+    const groups = (Array.isArray(c.zones) ? c.zones.slice(0, 6) : []).map((z) => ({
+      z,
+      devs: (Array.isArray(z.devices) ? z.devices.slice(0, 8) : []).map((d) => (typeof d === 'string' ? { power: d } : d)),
+    }));
+    if (groups.length && devs.length) {
+      groups.push({ z: { name: c.devices_name || 'Sonstige', icon: 'mdi:dots-horizontal-circle-outline' }, devs });
+    }
+    const vert = c.layout === 'vertical';
+    // Phasen (L1/L2/L3) als kleine Kreise über einer Zone (im senkrechten Layout links daneben): zones[].phases (max. 6)
+    const phasesOf = (z) => (Array.isArray(z.phases) ? z.phases.slice(0, 6) : []);
+    const PH = 80; // Platz über einer Zone mit Phasen (waagrechtes Layout)
+    const anyPh = groups.some((g) => phasesOf(g.z).length);
+    // senkrechtes Layout: Phasen-Kreise stehen als Spalte links neben der Zone
+    const maxPh = Math.max(0, ...groups.map((g) => phasesOf(g.z).length));
+    const phR = maxPh <= 3 ? 24 : 20;
+    const phStep = 2 * phR + 6;
+    const phTop = ((maxPh - 1) / 2) * phStep + phR; // so weit reicht die Spalte über/unter die Zonenmitte
+    const PHV = maxPh ? Math.max(0, Math.round(2 * phTop + 36 - 150)) : 0; // zusätzlicher Abstand Haus -> Zonen
+    const DYV = maxPh >= 4 ? 190 : 156; // senkrecht: Abstand Zone -> Geräte (mehr bei vielen Phasen)
+    const PHL = 70; // zusätzliche Breite links einer Zone mit Phasen (senkrechtes Layout)
+    const DS = 72; // Abstand der Geräte untereinander
+    // Untergeräte (devices[].children, max. 6) als kleine Kreise unter dem Gerät
+    const DKR = 22; // Radius
+    const DKG = 2 * DKR + 6; // Abstand der Untergeräte in der Reihe
+    const KDIST = 38; // Abstand Gerätekante -> Mitte der Untergeräte
+    const kidListOf = (d) => (Array.isArray(d.children) ? d.children.slice(0, 6).map((x) => (typeof x === 'string' ? { power: x } : { ...x })) : []);
+    const devKidsN = (d) => kidListOf(d).length;
+    const lblW = (d) => Math.ceil(7.6 * String(d.name || 'Gerät').length);
+    const anyDK = groups.some((g) => g.devs.some(devKidsN)) || devs.some(devKidsN);
+    const b = c.battery;
+    let yoff = 0;
+    let VH = 410;
+    let VW = 620;
+    let bFour = !!(b && (b.charge_power || b.discharge_power));
+    const batR = bFour ? 60 : 52; // gleich groß wie die anderen Kreise
+    const nodes = [];
+    let gridFan = 0.45; // Auffächerung der Linien der Netz-Kreise (senkrecht)
+    const add = (key, x, y, r, cfg, def) => {
+      if (cfg) nodes.push({ key, x, y: y + yoff, r, cfg: { ...def, ...cfg } });
+    };
+    if (!vert) {
+      // Phasen-Kreise stehen als Spalte links vom Netz-Kreis -> alles etwas nach rechts schieben
+      const gx0 = peakCfg ? 80 : 70;
+      const phNameW = Math.max(14, ...gridPhCfg.map((o) => Math.ceil(6.2 * String(o.name).length)));
+      const ox = gridPhCfg.length ? Math.max(0, Math.ceil(155 + phNameW - gx0)) : 0;
+      const blocks = [];
+      // Geräte mit Untergeräten brauchen darunter mehr Platz
+      const kExtraZ = (d) => (devKidsN(d) ? 78 : 0);
+      const spanOf = (g) => g.devs.reduce((a, d, j) => (j < g.devs.length - 1 ? a + DS + kExtraZ(d) : a), 0); // Abstand erstes -> letztes Gerät
+      const tailOf = (g) => (g.devs.length && devKidsN(g.devs[g.devs.length - 1]) ? 74 : 0);
+      const innerOf = (g) => Math.max(130, g.devs.length ? spanOf(g) + 72 + tailOf(g) : 0);
+      const hOf = (g) => innerOf(g) + (phasesOf(g.z).length ? PH : 0);
+      const total = groups.reduce((acc, g) => acc + hOf(g) + 10, -10);
+      let cursor = 180 - total / 2;
+      groups.forEach((g) => {
+        const hgt = hOf(g);
+        blocks.push({ top: cursor, hgt, ph: phasesOf(g.z).length ? PH : 0, inner: innerOf(g) });
+        cursor += hgt + 10;
+      });
+      const yoffZ = groups.length ? Math.max(0, 20 - (180 - total / 2)) : 0;
+      const bottomPre = groups.length ? 180 + total / 2 + 30 : 0;
+      // Geräte direkt am Haus (ohne Zonen): ab 4 Geräten kleiner und mit mehr Abstand, damit nichts überlappt
+      const dn = devs.length;
+      const devR = dn <= 3 ? 42 : 34;
+      const devSpan = Math.max(260, (dn - 1) * (2 * devR + 30)); // Platz für die Namen unter den Kreisen
+      const dStep = dn > 1 ? devSpan / (dn - 1) : 0;
+      const dExtra = (d) => (devKidsN(d) ? Math.max(0, 2 * devR + 112 - dStep) : 0); // mehr Abstand nach Geräten mit Untergeräten
+      const dSpanTot = dn > 1 ? devSpan + devs.slice(0, -1).reduce((a, d) => a + dExtra(d), 0) : 0;
+      const dTail = dn && devKidsN(devs[dn - 1]) ? 76 : 0;
+      const yoffD = !groups.length && dn > 1 ? Math.max(0, Math.ceil(dSpanTot / 2 + devR + 15 - 180)) : 0;
+      const devBottom = !groups.length && dn >= 1 ? 180 + dSpanTot / 2 + devR + 30 + dTail : 0;
+      const khD = Math.max(0, ...devs.map((d) => (devKidsN(d) * DKG) / 2));
+      const devX = (khD ? Math.max(555, Math.round(2 * khD + 488 - devR)) : 555) + ox; // weiter rechts, wenn Untergeräte-Reihen breit sind
+      yoff = Math.max(kidsCfg.length ? 88 : 0, yoffZ, yoffD) + (solRingOn ? 12 : 0); // Platz oben (Panels / Zonen / viele Geräte / Auslastungs-Ring)
+      VH = Math.max(410, bottomPre, devBottom) + yoff;
+      // Zonen/Geräte weiter nach rechts, wenn Phasen-Kreise über den Zonen Platz brauchen (je mehr Phasen, desto mehr)
+      const hsP = ((maxPh - 1) * phStep) / 2 + phR; // halbe Breite der Phasen-Reihe
+      const ZX = (anyPh ? Math.max(525, Math.round(2 * hsP + 404)) : 525) + ox;
+      const khZ = Math.max(0, ...groups.flatMap((g) => g.devs.map((d) => (devKidsN(d) * DKG) / 2)));
+      const DX = Math.max(anyPh ? Math.max(650 + ox, Math.round(ZX + 2 * hsP + 36)) : 650 + ox, khZ ? Math.round(ZX + 2 * khZ + 64) : 0);
+      // Breite: genug Platz rechts für den längsten Gerätenamen
+      const maxDevLen = Math.max(0, ...groups.flatMap((g) => g.devs.map((d) => String(d.name || 'Gerät').length)));
+      const maxKidLbl = Math.max(0, ...devs.filter(devKidsN).map(lblW));
+      VW = groups.length
+        ? Math.max(anyPh ? DX + 135 : 780 + ox, Math.ceil(DX + 56 + 7.6 * maxDevLen), Math.ceil(DX + khZ + 10))
+        : Math.max(620 + ox, khD ? Math.ceil(devX + devR + 12 + maxKidLbl + 10) : 0, Math.ceil(devX + khD + 10));
+      add('grid', gx0 + ox, 180, 60, c.grid, { name: 'Netz', icon: 'mdi:transmission-tower', color: '#4c8dbe' });
+      add('solar', 230 + ox, 85, 52, c.solar, { name: 'Solar', icon: 'mdi:solar-power', color: '#ff9800', label_pos: kidsCfg.length ? 'right' : 'top' });
+      bFour = !!(b && (b.charge_power || b.discharge_power));
+      add('battery', 230 + ox, 295, batR, b, { name: 'Batterie', icon: 'mdi:battery', color: '#e91e63', label_pos: batKidsCfg.length ? 'right' : 'bottom' });
+      this._home = { key: 'home', x: 380 + ox, y: 180 + yoff, r: 56, cfg: { name: 'Haus', icon: 'mdi:home', color: '#1e88e5', ...(c.home || {}) } };
+      nodes.push(this._home);
+      if (!groups.length) {
+        devs.forEach((d, i) => {
+          const n = devs.length;
+          const y = (n === 1 ? 180 : 180 - dSpanTot / 2 + i * dStep + devs.slice(0, i).reduce((a, dd) => a + dExtra(dd), 0)) + yoff;
+          nodes.push({ key: 'd' + i, x: devX, y, r: devR, dev: true, devKids: kidListOf(d), cfg: { name: 'Gerät', icon: 'mdi:flash', color: PALETTE[i % PALETTE.length], ...(devKidsN(d) ? { label_pos: 'right' } : {}), ...d } });
+        });
+      } else {
+        groups.forEach((g, gi) => {
+          const blk = blocks[gi];
+          const kz = g.devs.length;
+          const Sz = spanOf(g);
+          const y0 = blk.top + blk.ph + (blk.inner - (kz ? Sz + 72 + tailOf(g) : 0)) / 2 + 36 + yoff; // Mitte des ersten Geräts
+          const zy = kz ? y0 + Sz / 2 : blk.top + blk.ph + blk.inner / 2 + yoff;
+          const zc = g.z.color || PALETTE[gi % PALETTE.length];
+          const zcfg = { ...g.z };
+          delete zcfg.devices;
+          delete zcfg.phases;
+          const zn = { key: 'z' + gi, x: ZX, y: zy, r: 44, dev: true, devNodes: [], phases: phasesOf(g.z), cfg: { name: 'Zone', icon: 'mdi:floor-plan', ...zcfg, color: zc } };
+          nodes.push(zn);
+          let dy = y0;
+          g.devs.forEach((d, j) => {
+            const dn = { key: 'z' + gi + 'd' + j, x: DX, y: dy, r: 32, dev: true, parent: zn, devKids: kidListOf(d), cfg: { name: 'Gerät', icon: 'mdi:flash', label_pos: 'right', ...d, color: d.color || zc } };
+            nodes.push(dn);
+            zn.devNodes.push(dn);
+            dy += DS + kExtraZ(d);
+          });
+        });
+      }
+    } else {
+      // ---- Senkrechtes Layout: oben Solar | Netz | Batterie, darunter Haus, darunter Zonen/Geräte ----
+      // Breite eines Geräts samt Untergeräten (Name rechts neben dem Kreis, Untergeräte darunter) und Lage des Kreises darin
+      const slotOf = (d, base, r) => {
+        const kn = devKidsN(d);
+        if (!kn) return { w: base, off: base / 2 };
+        const kw = kn * DKG;
+        const a = Math.max(r + 4, kw / 2);
+        return { w: Math.max(kw, a + r + 10 + lblW(d) + 6) + 4, off: a + 2 };
+      };
+      const sumSlots = (g) => g.devs.reduce((a, d) => a + slotOf(d, 92, 32).w, 0);
+      const GWi = (g) => Math.max(150, sumSlots(g) + 10, Math.ceil(15 * String(g.z.name || 'Zone').length - 8)); // Breite der Zone mit ihren Geräten (und ihrem Namen)
+      const GW = (g) => GWi(g) + (phasesOf(g.z).length ? PHL : 0); // Breite einer Zone mit ihren Geräten
+      let contentW = 620;
+      if (groups.length) contentW = Math.max(620, groups.reduce((acc, g) => acc + GW(g), 0) + 40);
+      else if (devs.length) contentW = Math.max(620, devs.reduce((a, d) => a + slotOf(d, 100, 42).w, 0) + 40);
+      VW = Math.max(contentW, kidsCfg.length || batKidsCfg.length ? 700 : 0); // Platz für die Namen links/rechts neben Solar und Batterie
+      // Reihe über dem Netz (Phasen + Spitze) ist breit: Solar und Batterie rücken nach außen, damit ihre kleinen Kreise nicht anstoßen
+      const nGP = gridPhCfg.length;
+      const gridHalf = (nGP ? ((nGP - 1) * 50 + 44 + (peakCfg ? 14 + 66 : 0)) : peakCfg ? 66 : 0) / 2;
+      const kHalfOf = (n) => { const r0 = n <= 6 ? 26 : 20; return ((n - 1) * (2 * r0 + 6)) / 2 + r0; };
+      const sideSD = (n) => Math.max(190, n && gridHalf ? Math.ceil(gridHalf + kHalfOf(n) + 22) : 0);
+      gridFan = Math.min(0.45, 46 / Math.max(1, gridHalf - 22));
+      const SDs = sideSD(kidsCfg.length);
+      const SDb = sideSD(batKidsCfg.length);
+      if (kidsCfg.length || batKidsCfg.length) VW = Math.max(VW, 2 * (Math.max(SDs, SDb) + 160));
+      const cx = VW / 2;
+      yoff = Math.max(kidsCfg.length || batKidsCfg.length ? 88 : 0, peakCfg || gridPhCfg.length ? 100 : 0) + (solRingOn || batRingOn ? 12 : 0); // Platz oben für Panels / Batterien / Spitze / Phasen / Ringe
+      const topY = 100;
+      const homeY = gridMeter ? 340 : 300; // bei Zählerstand mehr Platz unter dem Netz-Kreis
+      add('grid', cx, topY, 60, c.grid, { name: 'Netz', icon: 'mdi:transmission-tower', color: '#4c8dbe', label_pos: kidsCfg.length || peakCfg || gridMeter ? 'bottom' : 'top' });
+      add('solar', cx - SDs, topY, 52, c.solar, { name: 'Solar', icon: 'mdi:solar-power', color: '#ff9800', label_pos: kidsCfg.length ? 'left' : 'top' });
+      add('battery', cx + SDb, topY, batR, b, { name: 'Batterie', icon: 'mdi:battery', color: '#e91e63', label_pos: batKidsCfg.length ? 'right' : 'top' });
+      this._home = { key: 'home', x: cx, y: homeY + yoff, r: 56, cfg: { name: 'Haus', icon: 'mdi:home', color: '#1e88e5', label_pos: 'right', ...(c.home || {}) } };
+      nodes.push(this._home);
+      const rowY = homeY + 150 + yoff + (anyPh ? PHV : 0);
+      let bottom;
+      if (!groups.length) {
+        const n = devs.length;
+        let sx = cx - devs.reduce((a, d) => a + slotOf(d, 100, 42).w, 0) / 2;
+        devs.forEach((d, i) => {
+          const sl = slotOf(d, 100, 42);
+          nodes.push({ key: 'd' + i, x: sx + sl.off, y: rowY, r: 42, dev: true, devKids: kidListOf(d), cfg: { name: 'Gerät', icon: 'mdi:flash', color: PALETTE[i % PALETTE.length], label_pos: devKidsN(d) ? 'right' : 'bottom', ...d } });
+          sx += sl.w;
+        });
+        bottom = n ? homeY + 150 + 42 + (anyDK ? 118 : 45) : homeY + 56 + 45;
+      } else {
+        let curX = cx - groups.reduce((acc, g) => acc + GW(g), 0) / 2;
+        groups.forEach((g, gi) => {
+          const w = GW(g);
+          const zx = curX + w - GWi(g) / 2;
+          curX += w;
+          const zc = g.z.color || PALETTE[gi % PALETTE.length];
+          const zcfg = { ...g.z };
+          delete zcfg.devices;
+          delete zcfg.phases;
+          const zn = { key: 'z' + gi, x: zx, y: rowY, r: 44, dev: true, devNodes: [], phases: phasesOf(g.z), cfg: { name: 'Zone', icon: 'mdi:floor-plan', ...zcfg, color: zc } };
+          nodes.push(zn);
+          let sx = zx - sumSlots(g) / 2;
+          g.devs.forEach((d, j) => {
+            const sl = slotOf(d, 92, 32);
+            const dn = { key: 'z' + gi + 'd' + j, x: sx + sl.off, y: rowY + DYV, r: 32, dev: true, parent: zn, devKids: kidListOf(d), cfg: { name: 'Gerät', icon: 'mdi:flash', label_pos: devKidsN(d) ? 'right' : 'bottom', ...d, color: d.color || zc } };
+            sx += sl.w;
+            nodes.push(dn);
+            zn.devNodes.push(dn);
+          });
+        });
+        bottom = homeY + 150 + DYV + 32 + (anyDK ? 118 : 45) + (anyPh ? PHV : 0);
+      }
+      VH = Math.max(bottom, 400) + yoff;
+    }
+    nodes.forEach((n) => { n.four = n.key === 'grid' || (n.key === 'battery' && bFour); });
+    this._nodes = nodes;
+
+    const gridNode = nodes.find((n) => n.key === 'grid');
+    if (gridNode && peakCfg) {
+      gridNode.ring = true;
+      gridNode.pad = 12; // Platz für den Ring
+    }
+    const batNode0 = nodes.find((n) => n.key === 'battery');
+    if (batNode0 && batRingOn) {
+      batNode0.capRing = 'soc';
+      batNode0.pad = 12;
+    }
+    const solNode0 = nodes.find((n) => n.key === 'solar');
+    if (solNode0 && solRingOn) {
+      solNode0.capRing = 'solar';
+      solNode0.pad = 12;
+    }
+    // Haus: äußerer Ring, aufgeteilt nach den Untergruppen (Zonen bzw. Geräte direkt am Haus)
+    const homeNode = nodes.find((n) => n.key === 'home');
+    if (homeNode && !(c.home && c.home.ring === false)) {
+      const grp = nodes.filter((n) => n.dev && !n.parent);
+      if (grp.length) {
+        homeNode.groups = grp;
+        homeNode.pad = 12;
+      }
+    }
+
+    // ---- Verbindungen ----
+    const by = {};
+    nodes.forEach((n) => { by[n.key] = n; });
+    const links = [];
+    const R = 36; // Kurvenradius der Linien
+    const lc = (n) => n.cfg.line_color || n.cfg.color;
+    const straight = (a, bb) => `M${a.x},${a.y} L${bb.x},${bb.y}`;
+    // senkrecht los, dann abgerundet in die Waagrechte
+    const vh = (x1, y1, x2, y2) => {
+      const sy = Math.sign(y2 - y1);
+      const sx = Math.sign(x2 - x1);
+      const r = Math.min(R, Math.abs(y2 - y1), Math.abs(x2 - x1));
+      return `M${x1},${y1} V${y2 - sy * r} Q${x1},${y2} ${x1 + sx * r},${y2} H${x2}`;
+    };
+    // Haus -> Gerät: waagrecht, abgerundet senkrecht, abgerundet waagrecht
+    const dev = (a, bb) => {
+      const dy = bb.y - a.y;
+      if (Math.abs(dy) < 1) return `M${a.x},${a.y} H${bb.x}`;
+      const xm = (a.x + a.r + bb.x - bb.r) / 2;
+      const sg = Math.sign(dy);
+      const r = Math.min(R, Math.abs(dy) / 2, xm - a.x);
+      return `M${a.x},${a.y} H${xm - r} Q${xm},${a.y} ${xm},${a.y + sg * r} V${bb.y - sg * r} Q${xm},${bb.y} ${xm + r},${bb.y} H${bb.x}`;
+    };
+    // senkrechtes Layout: Haus -> Zone/Gerät (senkrecht, abgerundet waagrecht, abgerundet senkrecht)
+    const devV = (a, bb, ymFixed) => {
+      const dx = bb.x - a.x;
+      if (Math.abs(dx) < 1) return `M${a.x},${a.y} V${bb.y}`;
+      const ym = ymFixed !== undefined ? ymFixed : (a.y + a.r + bb.y - bb.r) / 2;
+      const sg = Math.sign(dx);
+      const r = Math.min(R, Math.abs(dx) / 2, ym - a.y, bb.y - ym);
+      return `M${a.x},${a.y} V${ym - r} Q${a.x},${ym} ${a.x + sg * r},${ym} H${bb.x - sg * r} Q${bb.x},${ym} ${bb.x},${ym + r} V${bb.y}`;
+    };
+    // Linien von einem Kreis (Haus/Zone) zu mehreren Kindern (Zonen/Geräte), ohne dass sie sich überlappen:
+    // jede Linie startet an einem eigenen Punkt am Kreis, die Knicke sind gestaffelt (die weiteste Linie knickt zuerst ab)
+    const fanPaths = (par, kids, vt, umFixed) => {
+      const U = (o) => (vt ? o.y : o.x);
+      const V = (o) => (vt ? o.x : o.y);
+      const P = (u, v) => (vt ? `${v},${u}` : `${u},${v}`);
+      const sorted = kids.slice().sort((a, b) => V(a) - V(b));
+      const lo = sorted.filter((k) => V(k) - V(par) < -1).reverse(); // nächste zuerst
+      const hi = sorted.filter((k) => V(k) - V(par) > 1);
+      const mid = sorted.filter((k) => Math.abs(V(k) - V(par)) <= 1);
+      const hasMid = mid.length > 0;
+      const side = Math.max(lo.length, hi.length, 1);
+      const sp = Math.min(14, (par.r * 0.7) / (side + 0.5));
+      const res = {};
+      const place = (k, off, rank, cnt) => {
+        const ua = U(par);
+        const ub = U(k);
+        const va = V(par) + off;
+        const vb = V(k);
+        const gap = ub - k.r - (ua + par.r);
+        const stepU = Math.min(10, Math.max(3, (gap * 0.5) / side), 24 / Math.max(1, side - 1));
+        const umBase = umFixed !== undefined ? umFixed : (ua + par.r + ub - k.r) / 2;
+        const um = umBase + ((cnt - 1) / 2 - rank) * stepU;
+        const dv = vb - va;
+        if (Math.abs(dv) < 1) return `M${P(ua, va)} L${P(ub, vb)}`;
+        const sg = Math.sign(dv);
+        const r = Math.max(2, Math.min(R, Math.abs(dv) / 2, um - ua, ub - um));
+        return `M${P(ua, va)} L${P(um - r, va)} Q${P(um, va)} ${P(um, va + sg * r)} L${P(um, vb - sg * r)} Q${P(um, vb)} ${P(um + r, vb)} L${P(ub, vb)}`;
+      };
+      lo.forEach((k, j) => { res[k.key] = place(k, -(j + (hasMid ? 1 : 0.5)) * sp, j, lo.length); });
+      hi.forEach((k, j) => { res[k.key] = place(k, (j + (hasMid ? 1 : 0.5)) * sp, j, hi.length); });
+      mid.forEach((k) => { res[k.key] = place(k, 0, 0, 1); });
+      return res;
+    };
+    const fanLinks = () => {
+      const groupsBy = new Map();
+      nodes.filter((n) => n.dev).forEach((n) => {
+        const par = n.parent || this._home;
+        if (!groupsBy.has(par)) groupsBy.set(par, []);
+        groupsBy.get(par).push(n);
+      });
+      groupsBy.forEach((kids, par) => {
+        // senkrecht: Linien zu den Geräten einer Zone knicken unterhalb der Phasen-Spalte ab (links neben der Zone)
+        const nPh = par.phases ? par.phases.length : 0;
+        const umF = vert && par !== this._home ? par.y + Math.max(par.r + 52, nPh ? ((nPh - 1) / 2) * phStep + phR + 14 + (kids.length > 4 ? 12 : 0) : 0) : undefined;
+        const paths = fanPaths(par, kids, vert, umF);
+        kids.forEach((n) => links.push({ id: n.key, a: par, b: n, d: paths[n.key], ca: lc(n), cb: lc(n) }));
+      });
+    };
+    const L = (id, ka, kb, fn) => {
+      if (by[ka] && by[kb]) links.push({ id, a: by[ka], b: by[kb], d: fn(by[ka], by[kb]), ca: lc(by[ka]), cb: lc(by[kb]) });
+    };
+    if (!vert) {
+      L('grid_home', 'grid', 'home', straight);
+      L('solar_home', 'solar', 'home', (a, bb) => vh(a.x + 14, a.y, bb.x, bb.y - 14));
+      L('solar_grid', 'solar', 'grid', (a, bb) => vh(a.x - 14, a.y, bb.x, bb.y - 14));
+      L('solar_battery', 'solar', 'battery', (a, bb) => `M${a.x},${a.y} V${bb.y}`);
+      L('battery_home', 'battery', 'home', (a, bb) => vh(a.x + 14, a.y, bb.x, bb.y + 14));
+      L('battery_grid', 'battery', 'grid', (a, bb) => vh(a.x - 14, a.y, bb.x, bb.y + 14));
+      fanLinks();
+    } else {
+      L('grid_home', 'grid', 'home', (a, bb) => `M${a.x},${a.y} V${bb.y}`);
+      L('solar_home', 'solar', 'home', (a, bb) => vh(a.x - 14, a.y, bb.x, bb.y - 14));
+      L('battery_home', 'battery', 'home', (a, bb) => vh(a.x + 14, a.y, bb.x, bb.y - 14));
+      L('solar_grid', 'solar', 'grid', straight);
+      L('battery_grid', 'battery', 'grid', straight);
+      L('solar_battery', 'solar', 'battery', (a, bb) => {
+        const yb = a.y + 115 + (gridMeter ? 40 : 0);
+        return `M${a.x + 14},${a.y} V${yb - R} Q${a.x + 14},${yb} ${a.x + 14 + R},${yb} H${bb.x - 14 - R} Q${bb.x - 14},${yb} ${bb.x - 14},${yb - R} V${bb.y}`;
+      });
+      fanLinks();
+    }
+    // ---- kleine Kreise: Solar-Panels (oben) und Batterien (oben bzw. im waagrechten Layout unten) ----
+    let kidSvg = '';
+    this._kids = [];
+    this._peakKid = null;
+    const makeKids = (parent, list, prefix, mode, main, opt = {}) => {
+      if (!parent || !list.length) return;
+      const k = list.length;
+      const r = opt.r || parent.kidR || (main === 'm' ? 33 : k <= 6 ? 26 : 20);
+      const kd = opt.dist !== undefined ? opt.dist : parent.kidDist; // Abstand zum Elternkreis
+      const gap = 2 * r + 6;
+      const tiny = r < 22;
+      const w = (k - 1) * gap;
+      let x0 = Math.max(parent.x - w / 2 + (opt.shiftX || 0), r + 4);
+      x0 = Math.min(x0, Math.max(r + 4, VW - r - 4 - w));
+      const below = mode === 'below';
+      const padK = parent.pad || 0;
+      const left = mode === 'left'; // Spalte links neben dem Kreis
+      const cy0 = below ? parent.y + parent.r + (kd !== undefined ? kd : 64) + padK : parent.y - parent.r - (kd || 75) - padK;
+      if (below) VH = Math.max(VH, cy0 + r + 30 + (parent.mtail || 0));
+      list.forEach((raw, i) => {
+        const o = typeof raw === 'string' ? { [main === 's' ? 'soc' : 'power']: raw } : { ...raw };
+        const id = prefix + i;
+        const cx = left ? parent.x - parent.r - (kd || 22) - r : x0 + i * gap;
+        const cy = left ? parent.y + (i - (k - 1) / 2) * gap : cy0;
+        if (main === 'm') this._peakKid = { cx, cy, r };
+        const col = o.color || parent.cfg.color;
+        let dpath;
+        if (left) {
+          const dya = Math.max(-parent.r * 0.7, Math.min(parent.r * 0.7, (cy - parent.y) * 0.3));
+          const ey = parent.y + dya;
+          const ex = parent.x - Math.sqrt(parent.r * parent.r - dya * dya);
+          const mx = (cx + r + ex) / 2;
+          dpath = `M${cx + r},${cy} C${mx},${cy} ${mx},${ey} ${ex},${ey}`;
+        } else {
+          const dxa = Math.max(-parent.r * 0.8, Math.min(parent.r * 0.8, (cx - parent.x) * (opt.fan || 0.2)));
+          const ex = parent.x + dxa;
+          const arc = Math.sqrt(parent.r * parent.r - dxa * dxa);
+          const ey = below ? parent.y + arc : parent.y - arc;
+          const mid = cy + (ey - cy) / 2;
+          dpath = `M${cx},${cy} C${cx},${mid} ${ex},${mid} ${ex},${ey}`;
+        }
+        links.push({
+          id,
+          a: { key: id, cfg: { color: col } },
+          b: parent,
+          d: dpath,
+          ca: col,
+          cb: col,
+        });
+        // Phasen nur mit Strom/Spannung: keine leere Leistungszeile
+        const kk = main === 's' ? ['s'] : main === 'm' ? ['m'] : o.power || !(o.current || o.voltage || o.temperature) ? ['p'] : [];
+        if (main === 's' && o.power) kk.push('p');
+        if (main === 'm') {
+          if (o.live) kk.push('l');
+          if (o.last) kk.push('z');
+        }
+        if (o.current) kk.push('a');
+        if (o.voltage) kk.push('v');
+        if (o.temperature) kk.push('t');
+        if (o.switch && /^(z\d+)?d\d+c\d+$/.test(id)) swBtn(id, o, cx, cy, r, col);
+        const socRing = main === 's' && batRingOn;
+        const KC = 2 * Math.PI * r;
+        this._kids.push({ o, id, col, socRing, KC });
+        const KN = kk.length;
+        const lineH = KN >= 4 ? (tiny ? 8 : 9.5) : tiny ? 9 : 10;
+        const kfirst = cy + 4 - ((KN - 1) * lineH) / 2;
+        const ktxt = kk
+          .map((q, qi) => {
+            const yy = kfirst + qi * lineH;
+            if (qi === 0) return `<text id="k${q}_${id}" x="${cx}" y="${yy}" class="p" style="font-size:${tiny ? 10 : 12}px">–</text>`;
+            return `<text id="k${q}_${id}" x="${cx}" y="${yy}" class="s" style="font-size:${tiny ? 7.5 : 8.5}px">–</text>`;
+          })
+          .join('\n            ');
+        kidSvg += `
+          <g class="kid" id="kg_${id}">
+            <circle id="kc_${id}" cx="${cx}" cy="${cy}" r="${r}" fill="var(--card-background-color, #fff)" stroke="${col}" stroke-width="3"${socRing ? ' stroke-opacity="0.3"' : ''}/>
+            ${OPT.grad && main !== 'm' ? `<circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#${gradId(col)})" pointer-events="none"/>` : ''}
+            ${socRing ? `<circle id="kr_${id}" cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${col}" stroke-width="3" stroke-linecap="round" stroke-dasharray="0 ${KC.toFixed(1)}" transform="rotate(-90 ${cx} ${cy})" opacity="0"/>` : ''}
+            ${ktxt}
+            ${o.name ? (left ? `<text x="${cx - r - 5}" y="${cy + 3}" class="n" style="font-size:9px;text-anchor:end">${o.name}</text>` : `<text x="${cx}" y="${below ? cy + r + 12 : cy - r - 5}" class="n" style="font-size:9px">${o.name}</text>`) : ''}
+          </g>`;
+      });
+    };
+    makeKids(by.solar, kidsCfg, 'solar_c', 'above', 'p');
+    makeKids(by.battery, batKidsCfg, 'bat_c', vert ? 'above' : 'below', 's');
+    // senkrecht liegen Phasen und Spitze in einer Reihe über dem Netz-Kreis (Spitze rechts neben den Phasen)
+    let shiftPeak = 0;
+    let shiftPh = 0;
+    if (vert && by.grid && gridPhCfg.length && peakCfg) {
+      const nP = gridPhCfg.length;
+      const Wp = (nP - 1) * 50 + 44;
+      const left0 = by.grid.x - (Wp + 14 + 66) / 2;
+      shiftPeak = left0 + Wp + 14 + 33 - by.grid.x;
+      shiftPh = left0 + 22 - (by.grid.x - ((nP - 1) * 50) / 2);
+    }
+    if (by.grid && gridPhCfg.length) {
+      if (vert) makeKids(by.grid, gridPhCfg, 'gph_', 'above', 'p', { r: 22, dist: 75, shiftX: shiftPh, fan: gridFan });
+      else makeKids(by.grid, gridPhCfg, 'gph_', 'left', 'p', { r: 22, dist: 22 + (by.grid.pad || 0) });
+    }
+    if (peakCfg) {
+      const okC = peakCfg.ok_color || '#43a047';
+      makeKids(by.grid, [{ ...peakCfg, color: okC, name: peakCfg.name || 'Spitze 15 min' }], 'peak_c', vert ? 'above' : 'below', 'm', { shiftX: shiftPeak, fan: gridFan });
+    }
+    // Phasen über den Zonen: kleine Kreise (Standard: Strom fließt von der Zone zur Phase = Aufteilung der Zonenleistung)
+    nodes.filter((n) => n.phases && n.phases.length).forEach((zn) => {
+      zn.kidR = phR;
+      zn.kidDist = vert ? 22 : 40;
+      zn.phKids = [];
+      const list = zn.phases.map((raw, i) => {
+        const o = typeof raw === 'string' ? { power: raw } : { ...raw };
+        if (o.name === undefined) o.name = 'L' + (i + 1);
+        if (o.invert === undefined) o.invert = true;
+        return o;
+      });
+      list.forEach((o, i) => zn.phKids.push(zn.key + 'p' + i));
+      makeKids(zn, list, zn.key + 'p', vert ? 'left' : 'above', 'p');
+    });
+    // Untergeräte (kleine Kreise unter einem Gerät); Punkte laufen standardmäßig vom Gerät zum Untergerät
+    nodes.filter((n) => n.devKids && n.devKids.length).forEach((dn) => {
+      dn.kidR = DKR;
+      dn.kidDist = KDIST;
+      const list = dn.devKids.map((o) => {
+        const oo = { ...o };
+        if (oo.invert === undefined) oo.invert = true;
+        return oo;
+      });
+      dn.phKids = list.map((o, i) => dn.key + 'c' + i);
+      makeKids(dn, list, dn.key + 'c', 'below', 'p');
+    });
+    // Unabhängige Status-Kreise unten: ein Kreis pro Sensor (nicht mit dem Diagramm verbunden)
+    const stCirc = [];
+    stCfg.forEach((o, i) => { if (o.show.includes('circles')) o.ents.forEach((e, j) => stCirc.push({ i, j })); });
+    this._stCirc = stCirc;
+    let stSvg = '';
+    let stIcons = '';
+    if (stCirc.length) {
+      const R2 = 24;
+      const GX = 26;
+      const perRow = Math.max(1, Math.floor((VW - 40) / (2 * R2 + GX)));
+      const rows = Math.ceil(stCirc.length / perRow);
+      const y0 = VH + 6;
+      VH = y0 + rows * 82 + 6;
+      stCirc.forEach((q, k) => {
+        const row = Math.floor(k / perRow);
+        const inRow = row === rows - 1 ? stCirc.length - row * perRow : perRow;
+        const cx = VW / 2 + (k - row * perRow - (inRow - 1) / 2) * (2 * R2 + GX);
+        const cy = y0 + R2 + 4 + row * 82;
+        const id = q.i + '_' + q.j;
+        stSvg += `<g class="stc" id="stc_${id}" data-st="${q.i}:${q.j}"><circle cx="${cx}" cy="${cy}" r="${R2}" fill="var(--card-background-color, #fff)"/><circle id="stk_${id}" cx="${cx}" cy="${cy}" r="${R2}" fill="none" stroke="#888" stroke-width="3"/><text id="stt_${id}" x="${cx}" y="${cy + 16}" class="s" style="font-size:9px">–</text><text id="stn_${id}" x="${cx}" y="${cy + R2 + 14}" class="n" style="font-size:10px"></text></g>`;
+        const se = this._stSwEnt(stCfg[q.i], q.j);
+        if (se) swBtn('st_' + id, { switch: se, switch_confirm: stCfg[q.i].switch_confirm, name: stCfg[q.i].ents.length === 1 && stCfg[q.i].name ? stCfg[q.i].name : stCfg[q.i].ents[q.j].name || stCfg[q.i].name }, cx, cy, R2, stCfg[q.i].open_color || '#fb8c00');
+        stIcons += `<ha-icon id="sti_${id}" icon="mdi:door-closed" style="left:${(cx / VW) * 100}%;top:${((cy - 5) / VH) * 100}%;color:#888;--mdc-icon-size:${((18 / VW) * 100).toFixed(3)}cqw"></ha-icon>`;
+      });
+    }
+    this._links = links;
+
+    let paths = '';
+    let dots = '';
+    for (const l of links) {
+      paths += `<path id="l_${l.id}" d="${l.d}" fill="none" stroke="${l.ca}" stroke-width="2" opacity="0.3"/>`;
+      dots += `<path id="p_${l.id}" d="${l.d}" fill="none" stroke="none"/>
+        <circle id="dot_${l.id}" r="4.5" fill="${l.ca}" visibility="hidden"><animateMotion id="am_${l.id}" dur="3s" repeatCount="indefinite" keyPoints="0;1" keyTimes="0;1" calcMode="linear"><mpath href="#p_${l.id}"/></animateMotion></circle>`;
+    }
+
+    // ---- Kreise ----
+    let circles = '';
+    let icons = '';
+    for (const n of nodes) {
+      const col = n.cfg.color;
+      const s = n.dev ? (n.r <= 34 ? 0.7 : 0.85) : 1;
+      const lbl = '';
+      const hasSoc = n.key === 'battery' && !!n.cfg.soc && !!n.cfg.soc_in_circle;
+      const ic = n.cfg.icon_color || col;
+      const tc = n.cfg.text_color ? `fill:${n.cfg.text_color};` : '';
+      const c2 = n.cfg.export_color || n.cfg.charge_color || '#43a047';
+      const top = n.cfg.label_pos === 'top';
+      const side = n.cfg.label_pos === 'right' ? 1 : n.cfg.label_pos === 'left' ? -1 : 0;
+      const pad = n.pad || 0;
+      let ringSvg = '';
+      if (n.ring) {
+        const RR = n.r + 9;
+        n.ringC = 2 * Math.PI * RR;
+        ringSvg = `<circle cx="${n.x}" cy="${n.y}" r="${RR}" fill="none" stroke="#888" stroke-width="5" opacity="0.22"/>
+          <circle id="rg_${n.key}" cx="${n.x}" cy="${n.y}" r="${RR}" fill="none" stroke="#43a047" stroke-width="5" stroke-linecap="round" stroke-dasharray="0 ${n.ringC}" opacity="0" transform="rotate(-90 ${n.x} ${n.y})"/>`;
+      } else if (n.groups) {
+        const RR = n.r + 9;
+        n.ringC = 2 * Math.PI * RR;
+        ringSvg = `<circle cx="${n.x}" cy="${n.y}" r="${RR}" fill="none" stroke="#888" stroke-width="5" opacity="0.22"/>
+          ${n.groups
+            .map((g) => `<circle id="hs_${g.key}" cx="${n.x}" cy="${n.y}" r="${RR}" fill="none" stroke="${g.cfg.color}" stroke-width="5" stroke-dasharray="0 ${n.ringC}" opacity="0" transform="rotate(-90 ${n.x} ${n.y})"/>`)
+            .join('\n          ')}`;
+      }
+      if (n.dev && n.cfg.switch) swBtn(n.key, n.cfg, n.x, n.y, n.r, col);
+      if (!ringSvg && n.capRing) {
+        const RR = n.r + 9;
+        n.ringC = 2 * Math.PI * RR;
+        ringSvg = `<circle cx="${n.x}" cy="${n.y}" r="${RR}" fill="none" stroke="#888" stroke-width="5" opacity="0.22"/>
+          <circle id="cg_${n.key}" cx="${n.x}" cy="${n.y}" r="${RR}" fill="none" stroke="${n.capRing === 'solar' ? col : '#43a047'}" stroke-width="5" stroke-linecap="round" stroke-dasharray="0 ${n.ringC.toFixed(1)}" opacity="0" transform="rotate(-90 ${n.x} ${n.y})"/>`;
+      }
+      // unter dem Netz-Kreis läuft eine Linie (senkrecht: zum Haus, waagrecht: zur Spitze) -> Name links neben die Linie
+      const besideLine = n.key === 'grid' && !side && !top && (vert || !!peakCfg);
+      // Zone mit Geräten (senkrecht): unter der Zone laufen die Linien zu den Geräten -> Name rechts daneben
+      const zoneRight = vert && !!(n.devNodes && n.devNodes.length) && !side && !top;
+      const lx = side ? n.x + side * (n.r + 10 + pad) : besideLine ? n.x - 8 : zoneRight ? n.x + 34 : n.x;
+      const lan = side > 0 ? 'start' : side < 0 ? 'end' : besideLine ? 'end' : zoneRight ? 'start' : 'middle';
+      const ny = side ? n.y + 2 : top ? n.y - n.r - 8 - pad : n.y + n.r + 17 + pad;
+      const sy2 = side ? n.y + 17 : top ? n.y - n.r - 22 - pad : n.y + n.r + 32 + pad;
+      // Zählerstand-Zeilen so platzieren, dass sie nicht über Linien laufen:
+      // waagrecht -> über dem Netz-Kreis; senkrecht -> links/rechts neben der Linie
+      let meterSvg = '';
+      if (n.key === 'grid' && gridMeter) {
+        meterSvg = [0, 1]
+          .map((mi) => {
+            let mx = lx;
+            let my = sy2 + (top ? -1 : 1) * (14 + mi * 13);
+            let man = lan;
+            if (vert) {
+              mx = n.x + (mi === 0 ? -8 : 8);
+              man = mi === 0 ? 'end' : 'start';
+              my = sy2 + 14;
+            } else {
+              // waagrecht: über dem Netz-Kreis (bzw. über dem Ring), dort läuft keine Linie und es ist klar,
+              // dass die Werte zum Zähler und nicht zur 15-Minuten-Spitze gehören
+              mx = n.x;
+              my = n.y - n.r - 12 - (n.ring ? 12 : 0) - (1 - mi) * 13;
+              man = 'middle';
+            }
+            return `<text id="mt_${mi}" x="${mx}" y="${my}" class="sec" style="text-anchor:${man};font-size:10.5px"></text>`;
+          })
+          .join('\n          ');
+      }
+      // Zeilen im Kreis: Leistung, dann nur das, was konfiguriert ist (current, voltage, temperature)
+      const kinds = n.four ? ['in', 'out'] : ['p'];
+      if (n.cfg.current) kinds.push('a');
+      if (n.cfg.voltage) kinds.push('v');
+      if (n.cfg.temperature) kinds.push('t');
+      if (n.cfg.frequency) kinds.push('f');
+      (Array.isArray(n.cfg.extra) ? n.cfg.extra.slice(0, 4) : []).forEach((_, xi) => kinds.push('x' + xi));
+      n.lines = kinds;
+      const N = kinds.length;
+      const sc = n.four ? 1 : s;
+      let step = (N <= 2 ? 17 : N === 3 ? 15 : N === 4 ? 13.5 : 12.5) * sc;
+      let first = n.y + 8 * sc - ((N - 1) * step) / 2;
+      let iconY = n.y - n.r * (n.r <= 34 ? 0.62 : 0.65);
+      let socY = null;
+      if (hasSoc) {
+        socY = n.y - n.r + 24; // Ladestand ganz oben im Kreis
+        iconY = socY + 16; // Icon darunter
+        first = Math.max(first, socY + 40); // Werte unter dem Icon
+        if (N > 1) step = Math.min(step, (n.y + n.r - 14 - first) / (N - 1));
+      } else if (N >= 5) {
+        // viele Zeilen: unter dem Icon beginnen und enger setzen, Kreis bleibt gleich groß
+        first = Math.max(first, iconY + 22);
+        step = Math.min(step, (n.y + n.r - 14 - first) / (N - 1));
+      }
+      const smallFs = Math.min(n.four ? 11 : 12 * s, Math.max(8, step * 0.9));
+      const body = kinds
+        .map((k, i) => {
+          const yy = first + i * step;
+          if (k === 'p' || k === 'in') return `<text x="${n.x}" y="${yy}" class="p" style="font-size:${n.four ? 14 : 16 * s}px;${tc}">–</text>`;
+          if (k === 'out') return `<text x="${n.x}" y="${yy}" class="p" style="font-size:14px;fill:${c2}">–</text>`;
+          return `<text x="${n.x}" y="${yy}" class="s" style="font-size:${smallFs}px;${tc}">–</text>`;
+        })
+        .join('\n           ');
+      const isz = n.r <= 34 ? 14 : 20;
+      icons += `<ha-icon id="i_${n.key}" icon="${n.cfg.icon}" style="left:${(n.x / VW) * 100}%;top:${(iconY / VH) * 100}%;color:${ic};--mdc-icon-size:${((isz / VW) * 100).toFixed(3)}cqw"></ha-icon>`;
+      // fester Hintergrund außerhalb der Gruppe: beim Ausgrauen (opacity) scheinen sonst die Linien durch den Kreis
+      circles += `
+        <circle cx="${n.x}" cy="${n.y}" r="${n.r}" fill="var(--card-background-color, #fff)"/>
+        <g class="node" id="g_${n.key}">
+          ${ringSvg}
+          <circle id="c_${n.key}" cx="${n.x}" cy="${n.y}" r="${n.r}" fill="var(--card-background-color, #fff)" stroke="${col}" stroke-width="4" style="--gc:${col}"/>
+          ${OPT.grad ? `<circle cx="${n.x}" cy="${n.y}" r="${n.r}" fill="url(#${gradId(col)})" pointer-events="none"/>` : ''}
+          ${body}
+          ${hasSoc ? `<text id="soc_${n.key}" x="${n.x}" y="${socY}" class="p" style="font-size:14px;${tc}"></text>` : ''}
+          <text x="${lx}" y="${ny}" class="n" style="text-anchor:${lan}">${n.cfg.name} ${lbl}</text>
+          <text id="sec_${n.key}" x="${lx}" y="${sy2}" class="sec" style="text-anchor:${lan}"></text>
+          ${meterSvg}
+        </g>`;
+    }
+
+    // Abzeichen am Kreis (status[].at = Name des Kreises, z. B. "Garage / Keller")
+    this._stb = [];
+    let stbSvg = '';
+    let stbIcons = '';
+    stCfg.forEach((o, i) => {
+      if (!o.at) return;
+      const nd = nodes.find((n) => String(n.cfg.name).toLowerCase() === String(o.at).toLowerCase() || n.key === o.at);
+      if (!nd) return;
+      const rb = nd.r >= 40 ? 13 : 11;
+      const bx = nd.x - nd.r * 0.74;
+      const by0 = nd.y - nd.r * 0.68;
+      this._stb.push({ i });
+      stbSvg += `<g class="stb" id="stb_${i}" data-st="${i}:-1"><circle cx="${bx.toFixed(1)}" cy="${by0.toFixed(1)}" r="${rb + 4}" fill="transparent"/><circle cx="${bx.toFixed(1)}" cy="${by0.toFixed(1)}" r="${rb}" fill="var(--card-background-color, #fff)"/><circle id="stbk_${i}" cx="${bx.toFixed(1)}" cy="${by0.toFixed(1)}" r="${rb}" fill="none" stroke="#888" stroke-width="2.5"/><g id="stbc_${i}" visibility="hidden"><circle cx="${(bx - rb * 0.75).toFixed(1)}" cy="${(by0 - rb * 0.75).toFixed(1)}" r="7" fill="#e53935"/><text id="stbn_${i}" x="${(bx - rb * 0.75).toFixed(1)}" y="${(by0 - rb * 0.75 + 3).toFixed(1)}" style="font-size:9px;font-weight:600;fill:#fff">0</text></g></g>`;
+      stbIcons += `<ha-icon id="stbi_${i}" icon="mdi:door-closed" style="left:${(bx / VW) * 100}%;top:${(by0 / VH) * 100}%;color:#888;--mdc-icon-size:${(((rb + 1) / VW) * 100).toFixed(3)}cqw"></ha-icon>`;
+    });
+    // Kopfzeile links oben: Titel, darunter Datum und Uhrzeit
+    const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const stHdr = stCfg.some((o) => o.show.includes('header'));
+    const stInfo = stCfg.some((o) => o.show.includes('info'));
+    const hdr = c.title || c.date || c.time || stHdr
+      ? `<div class="hdr">${c.title || c.date || c.time ? `<div class="hl">${c.title ? `<div class="t">${esc(c.title)}</div>` : ''}${c.date || c.time ? '<div class="dt"><span class="hd"></span>' + (c.date && c.time ? ' · ' : '') + '<span class="ht"></span></div>' : ''}</div>` : ''}${stHdr ? '<div class="hs"></div>' : ''}</div>`
+      : '';
+    const defsSvg = gradDefs.size
+      ? '<defs>' + [...gradDefs].map(([gc, gi]) => `<radialGradient id="${gi}" cx="35%" cy="28%" r="80%"><stop offset="0" style="stop-color:${gc};stop-opacity:0.22"/><stop offset="1" style="stop-color:${gc};stop-opacity:0.03"/></radialGradient>`).join('') + '</defs>'
+      : '';
+    const I0 = c.info && typeof c.info === 'object' ? c.info : {};
+    const infoOn = !!(stInfo || I0.autarky || I0.self_consumption || I0.battery_time || (Array.isArray(I0.items) && I0.items.length) || (c.grid && c.grid.price));
+    this._infoOn = infoOn;
+    const extraH = (hdr ? 64 : 0) + (infoOn ? 46 : 0);
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: block; }
+        ha-card { display: block; padding: 8px; position: relative; }
+        ha-card.hasfs, ha-card.haszm { padding-bottom: 42px; }
+        ha-card.hasfs.fs, ha-card.haszm.fs { padding-bottom: 0; }
+        .wrap.zm { overflow: hidden; touch-action: pan-y; }
+        .wrap.zm.zoomed { touch-action: none; cursor: grab; }
+        .wrap.zm.zoomed.drag { cursor: grabbing; }
+        .zi { position: relative; transform-origin: 0 0; }
+        .zbtns { position: absolute; right: 46px; bottom: 5px; z-index: 3; display: flex; gap: 4px; }
+        .zbtns.nofs { right: 8px; }
+        .zb { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; background: rgba(127, 127, 127, 0.15); opacity: 0.6; user-select: none; }
+        .zb:hover { opacity: 1; background: rgba(127, 127, 127, 0.3); }
+        .zb ha-icon { position: static; transform: none; --mdc-icon-size: 22px; pointer-events: none; }
+        .zb.zr { display: none; }
+        .zbtns.zoomed .zb.zr { display: flex; }
+        .wrap { position: relative; container-type: inline-size; margin: 0 auto; }
+        .hdr { padding: 2px 8px 8px; line-height: 1.25; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px 16px; flex-wrap: wrap; }
+        .hs { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
+        .sp { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px 4px 8px; border-radius: 20px; font-size: 13px; color: var(--primary-text-color); background: rgba(127, 127, 127, 0.15); border: 1px solid transparent; cursor: pointer; white-space: nowrap; }
+        .sp ha-icon { position: static; transform: none; --mdc-icon-size: 20px; color: var(--sc); pointer-events: none; }
+        .sp.open, .sp.alert { background: color-mix(in srgb, var(--sc) 16%, transparent); border-color: var(--sc); }
+        .sp.alert { animation: vaw-pulse 1s ease-in-out infinite; }
+        .sp.unknown { opacity: 0.6; }
+        g.stc, g.stb { cursor: pointer; }
+        .spw { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; margin-left: 2px; border-radius: 50%; background: rgba(127, 127, 127, 0.28); cursor: pointer; }
+        .spw:hover { background: var(--sc, rgba(127, 127, 127, 0.5)); }
+        .spw ha-icon { --mdc-icon-size: 15px; color: var(--primary-text-color); position: static; transform: none; pointer-events: none; }
+        g.stc.alert, g.stb.alert { animation: vaw-pulse 1s ease-in-out infinite; }
+        g.stc circle[id^="stk_"] { transition: stroke 0.4s; }
+        .hdr .t { font-size: 18px; font-weight: 600; color: var(--primary-text-color); }
+        .hdr .dt { font-size: 13px; color: var(--secondary-text-color); }
+        ha-card.fs.hasx { flex-direction: column; }
+        ha-card.fs.hasx .hdr { align-self: stretch; padding: 10px 16px 4px; }
+        ha-card.fs.hasx .wrap { width: min(100vw, calc((100vh - var(--extra)) * var(--ar))); }
+        .info { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 44px 0 8px; }
+        ha-card.fs .info { align-self: flex-start; padding: 6px 16px 10px; }
+        .chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 14px; font-size: 12.5px; background: rgba(127, 127, 127, 0.15); color: var(--primary-text-color); white-space: nowrap; }
+        .chip[data-e] { cursor: pointer; }
+        .chip ha-icon { position: static; transform: none; --mdc-icon-size: 16px; pointer-events: none; color: var(--secondary-text-color); }
+        .chip .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+        ha-card.grad g.node > circle[id^="c_"] { filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3)); }
+        ha-card.glow g.node.on > circle[id^="c_"] { filter: drop-shadow(0 0 6px var(--gc)); }
+        g.node.pulse > circle[id^="c_"] { animation: vaw-glow 2.6s ease-in-out infinite; }
+        @keyframes vaw-glow { 0%, 100% { filter: drop-shadow(0 0 2px var(--gc)); } 50% { filter: drop-shadow(0 0 11px var(--gc)); } }
+        text.lim { fill: var(--vaw-lim, #e53935) !important; }
+        .wrap { transition: opacity 0.8s; }
+        ha-card.calm .wrap { opacity: var(--calm-dim, 0.75); }
+        ha-card.calm g.node > circle[id^="c_"], ha-card.calm g.node.on > circle[id^="c_"], ha-card.calm g.node.pulse > circle[id^="c_"] { filter: none; animation: none; }
+        g.sw { cursor: pointer; }
+        g.sw .swb { fill: var(--card-background-color, #1c1c1c); stroke: var(--secondary-text-color); stroke-width: 2; transition: fill 0.25s, stroke 0.25s; }
+        g.sw .swi { fill: none; stroke: var(--secondary-text-color); stroke-width: 2; stroke-linecap: round; transition: stroke 0.25s; }
+        g.sw.on .swb { fill: var(--sc); stroke: var(--sc); }
+        g.sw.on .swi { stroke: var(--card-background-color, #1c1c1c); }
+        g.sw:hover .swb { stroke: var(--sc); }
+        g.sw.un { opacity: 0.35; cursor: default; }
+        ha-card.tap g.node, ha-card.tap g.kid { cursor: pointer; }
+        circle[id^="cg_"], circle[id^="kr_"] { transition: stroke-dasharray 0.8s linear, stroke 0.4s; }
+        ${OPT.ns !== 1 ? 'g.node .p { transform-box: fill-box; transform-origin: 50% 50%; transform: scale(var(--ns)); }' : ''}
+        .fsbtn { position: absolute; right: 8px; bottom: 5px; z-index: 3; width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; background: rgba(127, 127, 127, 0.18); color: var(--secondary-text-color); opacity: 0.7; transition: opacity 0.2s, background 0.2s; -webkit-tap-highlight-color: transparent; }
+        .fsbtn:hover { opacity: 1; background: rgba(127, 127, 127, 0.3); }
+        .fsbtn ha-icon { position: static; transform: none; --mdc-icon-size: 22px; pointer-events: none; }
+        ha-card.fs { position: fixed; inset: 0; z-index: 9999; width: 100vw; height: 100vh; border-radius: 0; padding: 0; display: flex; align-items: center; justify-content: center; overflow: auto; background: var(--card-background-color, #111); }
+        ha-card.fs .wrap { width: min(100vw, calc(100vh * var(--ar))); }
+        svg { width: 100%; height: auto; display: block; }
+        ha-icon { position: absolute; transform: translate(-50%, -50%); --mdc-icon-size: 20px; pointer-events: none; }
+        text { text-anchor: middle; fill: var(--primary-text-color); font-family: var(--paper-font-body1_-_font-family, sans-serif); }
+        .p { font-weight: 600; }
+        .s { fill: var(--secondary-text-color); }
+        .n { font-size: 13px; fill: var(--secondary-text-color); }
+        .n, .sec { paint-order: stroke; stroke: var(--card-background-color, #1c1c1c); stroke-width: 4px; stroke-linejoin: round; }
+        .sec { font-size: 11px; fill: var(--secondary-text-color); opacity: 0.85; }
+        g.node, ha-icon { transition: opacity 0.4s; }
+        circle[id^="hs_"] { transition: stroke-dasharray 0.8s linear, stroke-dashoffset 0.8s linear; }
+        circle[id^="rg_"] { transition: stroke-dasharray 0.8s linear, stroke 0.4s; }
+        @keyframes vaw-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+        .alert { animation: vaw-pulse 1s ease-in-out infinite; }
+      </style>
+      <ha-card class="${c.fullscreen_button === false ? '' : 'hasfs'}${OPT.zoom ? ' haszm' : ''}${hdr || infoOn ? ' hasx' : ''}${OPT.grad ? ' grad' : ''}${OPT.glow ? ' glow' : ''}${OPT.tap ? ' tap' : ''}" style="--ar:${(VW / VH).toFixed(4)};--extra:${extraH}px;--ns:${OPT.ns};--vaw-lim:${this._lim.color};--calm-dim:${c.calm && c.calm.dim !== undefined && !isNaN(Number(c.calm.dim)) ? Math.max(0.2, Math.min(1, Number(c.calm.dim))) : 0.75}">
+        ${hdr}
+        <div class="wrap${OPT.zoom ? ' zm' : ''}">
+          <div class="zi">
+            <svg viewBox="0 0 ${VW} ${VH}">${defsSvg}${paths}${dots}${circles}${kidSvg}${stSvg}${swSvg}${stbSvg}</svg>
+            ${icons}${stIcons}${stbIcons}
+          </div>
+        </div>
+        ${OPT.zoom ? `<div class="zbtns${c.fullscreen_button === false ? ' nofs' : ''}"><div class="zb zr" data-z="r" title="Zoom zurücksetzen"><ha-icon icon="mdi:fit-to-screen-outline"></ha-icon></div><div class="zb" data-z="-" title="Verkleinern"><ha-icon icon="mdi:magnify-minus-outline"></ha-icon></div><div class="zb" data-z="+" title="Vergrößern"><ha-icon icon="mdi:magnify-plus-outline"></ha-icon></div></div>` : ''}
+        ${infoOn ? '<div class="info"></div>' : ''}
+        ${c.fullscreen_button === false ? '' : '<div class="fsbtn" title="Vollbild"><ha-icon icon="mdi:fullscreen"></ha-icon></div>'}
+      </ha-card>`;
+    const fsb = this.shadowRoot.querySelector('.fsbtn');
+    if (fsb) fsb.addEventListener('click', () => this._toggleFs());
+    // Antippen: öffnet den Verlauf (more-info) des passenden Sensors
+    const svgEl = this.shadowRoot.querySelector('svg');
+    if (svgEl) {
+      svgEl.addEventListener('click', (e) => {
+        const sw = e.target.closest ? e.target.closest('g.sw') : null;
+        if (sw) {
+          e.stopPropagation();
+          this._toggleSw(sw.getAttribute('data-sw'));
+          return;
+        }
+        const sg = e.target.closest ? e.target.closest('g.stc, g.stb') : null;
+        if (sg) {
+          e.stopPropagation();
+          this._stClick(sg.getAttribute('data-st'));
+          return;
+        }
+        if (!OPT.tap) return;
+        const g = e.target.closest ? e.target.closest('g.node, g.kid') : null;
+        if (!g) return;
+        let ent = null;
+        if (g.classList.contains('node')) {
+          const idx = Array.prototype.indexOf.call(svgEl.querySelectorAll('g.node'), g);
+          const nd = this._nodes[idx];
+          if (nd) ent = this._tapEntity(nd.cfg);
+        } else {
+          const kid = (this._kids || []).find((k) => 'kg_' + k.id === g.id);
+          if (kid) ent = this._tapEntity(kid.o);
+        }
+        if (ent) this._moreInfo(ent);
+      });
+    }
+    const infoEl0 = this.shadowRoot.querySelector('.info');
+    if (infoEl0) {
+      infoEl0.addEventListener('click', (e) => {
+        const sw0 = e.target.closest ? e.target.closest('[data-stsw]') : null;
+        if (sw0) return this._stSwClick(sw0.getAttribute('data-stsw'));
+        const st0 = e.target.closest ? e.target.closest('[data-st]') : null;
+        if (st0) return this._stClick(st0.getAttribute('data-st'));
+        const ch = e.target.closest ? e.target.closest('[data-e]') : null;
+        if (ch && OPT.tap) this._moreInfo(ch.getAttribute('data-e'));
+      });
+    }
+    const hsEl0 = this.shadowRoot.querySelector('.hs');
+    if (hsEl0) {
+      hsEl0.addEventListener('click', (e) => {
+        const sw1 = e.target.closest ? e.target.closest('[data-stsw]') : null;
+        if (sw1) return this._stSwClick(sw1.getAttribute('data-stsw'));
+        const sp = e.target.closest ? e.target.closest('[data-st]') : null;
+        if (sp) this._stClick(sp.getAttribute('data-st'));
+      });
+    }
+    this._setupZoom(OPT);
+    this._applyFs();
+    if (this._hass) this._update();
+  }
+
+  // Zoomen und Verschieben (Mausrad mit Strg, Pinch, Ziehen, Knöpfe)
+  _setupZoom(OPT) {
+    const sr = this.shadowRoot;
+    const wrap = sr.querySelector('.wrap');
+    const zi = sr.querySelector('.zi');
+    const zb = sr.querySelector('.zbtns');
+    if (!OPT.zoom || !wrap || !zi) return;
+    const Z = this._z || (this._z = { s: 1, x: 0, y: 0 });
+    const apply = () => {
+      const w = wrap.clientWidth;
+      const h = wrap.clientHeight;
+      Z.s = Math.max(1, Math.min(OPT.zmax, Z.s));
+      Z.x = Math.max(w * (1 - Z.s), Math.min(0, Z.x));
+      Z.y = Math.max(h * (1 - Z.s), Math.min(0, Z.y));
+      if (Z.s <= 1.001) { Z.s = 1; Z.x = 0; Z.y = 0; }
+      zi.style.transform = Z.s === 1 ? '' : `translate(${Z.x}px, ${Z.y}px) scale(${Z.s})`;
+      wrap.classList.toggle('zoomed', Z.s > 1);
+      if (zb) zb.classList.toggle('zoomed', Z.s > 1);
+    };
+    this._zApply = apply;
+    // um einen Punkt (px, py relativ zum Rahmen) auf Faktor ns zoomen
+    const zoomAt = (px, py, ns) => {
+      ns = Math.max(1, Math.min(OPT.zmax, ns));
+      const cx = (px - Z.x) / Z.s;
+      const cy = (py - Z.y) / Z.s;
+      Z.s = ns;
+      Z.x = px - cx * ns;
+      Z.y = py - cy * ns;
+      apply();
+    };
+    const rel = (e) => {
+      const r = wrap.getBoundingClientRect();
+      return [e.clientX - r.left, e.clientY - r.top];
+    };
+    wrap.addEventListener('wheel', (e) => {
+      if (!(e.ctrlKey || e.metaKey || this._fs || Z.s > 1)) return;
+      e.preventDefault();
+      const [px, py] = rel(e);
+      zoomAt(px, py, Z.s * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0018)));
+    }, { passive: false });
+    // Zeiger: 1 Finger/Maus = verschieben (nur wenn gezoomt), 2 Finger = Pinch
+    const P = new Map();
+    let moved = false;
+    let g = null;
+    const mid = () => {
+      const a = [...P.values()];
+      return a.length > 1 ? [(a[0][0] + a[1][0]) / 2, (a[0][1] + a[1][1]) / 2, Math.hypot(a[0][0] - a[1][0], a[0][1] - a[1][1])] : [a[0][0], a[0][1], 0];
+    };
+    wrap.addEventListener('pointerdown', (e) => {
+      if (e.button !== undefined && e.button > 0) return;
+      const r = wrap.getBoundingClientRect();
+      P.set(e.pointerId, [e.clientX - r.left, e.clientY - r.top]);
+      const m = mid();
+      g = { x0: m[0], y0: m[1], d0: m[2], s0: Z.s, ox: Z.x, oy: Z.y, n: P.size, start: [m[0], m[1]] };
+      moved = false;
+    });
+    wrap.addEventListener('pointermove', (e) => {
+      if (!P.has(e.pointerId) || !g) return;
+      const r = wrap.getBoundingClientRect();
+      P.set(e.pointerId, [e.clientX - r.left, e.clientY - r.top]);
+      if (P.size !== g.n) {
+        const m0 = mid();
+        g = { x0: m0[0], y0: m0[1], d0: m0[2], s0: Z.s, ox: Z.x, oy: Z.y, n: P.size, start: g.start };
+        return;
+      }
+      const m = mid();
+      if (P.size >= 2 && g.d0 > 0) {
+        moved = true;
+        const ns = Math.max(1, Math.min(OPT.zmax, g.s0 * (m[2] / g.d0)));
+        const cx = (g.x0 - g.ox) / g.s0;
+        const cy = (g.y0 - g.oy) / g.s0;
+        Z.s = ns;
+        Z.x = m[0] - cx * ns;
+        Z.y = m[1] - cy * ns;
+        apply();
+      } else if (Z.s > 1) {
+        if (!moved && Math.hypot(m[0] - g.start[0], m[1] - g.start[1]) < 6) return;
+        if (!moved) { moved = true; wrap.classList.add('drag'); try { wrap.setPointerCapture(e.pointerId); } catch (x) { /* egal */ } }
+        Z.x = g.ox + (m[0] - g.x0);
+        Z.y = g.oy + (m[1] - g.y0);
+        apply();
+      }
+    });
+    const end = (e) => {
+      P.delete(e.pointerId);
+      if (!P.size) {
+        wrap.classList.remove('drag');
+        if (moved) { this._zSup = performance.now(); }
+        g = null;
+      } else if (g) {
+        const m = mid();
+        g = { x0: m[0], y0: m[1], d0: m[2], s0: Z.s, ox: Z.x, oy: Z.y, n: P.size, start: g.start };
+      }
+    };
+    wrap.addEventListener('pointerup', end);
+    wrap.addEventListener('pointercancel', end);
+    // nach einem Ziehen/Pinch den Klick (Verlauf öffnen, Schalten) unterdrücken
+    wrap.addEventListener('click', (e) => {
+      if (this._zSup && performance.now() - this._zSup < 400) {
+        e.stopPropagation();
+        e.preventDefault();
+        this._zSup = 0;
+      }
+    }, true);
+    if (zb) {
+      zb.addEventListener('click', (e) => {
+        const b = e.target.closest ? e.target.closest('[data-z]') : null;
+        if (!b) return;
+        const k = b.getAttribute('data-z');
+        const cx = wrap.clientWidth / 2;
+        const cy = wrap.clientHeight / 2;
+        if (k === 'r') { Z.s = 1; apply(); } else zoomAt(cx, cy, Z.s * (k === '+' ? 1.5 : 1 / 1.5));
+      });
+    }
+    apply();
+  }
+
+  _num(entity, kind) {
+    if (!entity || !this._hass) return null;
+    const st = this._hass.states[entity];
+    if (!st) return null;
+    let v = parseFloat(st.state);
+    if (isNaN(v)) return null;
+    const u = st.attributes.unit_of_measurement;
+    if (kind === 'p' && u === 'kW') v *= 1000;
+    if (kind === 'i' && u === 'mA') v /= 1000;
+    return v;
+  }
+
+  _fmtP(w) {
+    if (w === null) return '–';
+    return Math.abs(w) >= 1000 ? (w / 1000).toFixed(2) + ' kW' : Math.round(w) + ' W';
+  }
+
+  // Geschwindigkeit der Punkte (Dauer einer Runde in Sekunden): logarithmisch, damit auch kleine
+  // Unterschiede bei kleinen Leistungen sichtbar sind. 5 W = langsam (7 s), speed_max_w = schnell (1.2 s)
+  _lx(w) {
+    const hi = Math.max(50, Number(this._c.speed_max_w) || 3000);
+    const lo = 5;
+    return Math.min(1, Math.log(Math.max(w, lo) / lo) / Math.log(hi / lo));
+  }
+
+  _dur(w) {
+    return 7 - this._lx(w) * (7 - 1.2);
+  }
+
+  // Zählerstand in kWh (Wh/MWh werden umgerechnet), mit Tausenderpunkt wie in Österreich
+  _meter(entity, name, decimals) {
+    const st = entity && this._hass ? this._hass.states[entity] : null;
+    const v0 = st ? parseFloat(st.state) : NaN;
+    if (isNaN(v0)) return `${name} – kWh`;
+    const u = st.attributes.unit_of_measurement;
+    const v = u === 'Wh' ? v0 / 1000 : u === 'MWh' ? v0 * 1000 : v0;
+    const d = decimals !== undefined ? Number(decimals) : 1;
+    return `${name} ${v.toLocaleString('de-AT', { minimumFractionDigits: d, maximumFractionDigits: d })} kWh`;
+  }
+
+  _kw(w, unit) {
+    if (w === null || w === undefined) return unit ? '– kW' : '–';
+    return (w / 1000).toFixed(2) + (unit ? ' kW' : '');
+  }
+
+  _extra(spec) {
+    const o = typeof spec === 'string' ? { entity: spec } : spec || {};
+    const st = o.entity && this._hass ? this._hass.states[o.entity] : null;
+    const pre = o.name ? o.name + ' ' : '';
+    if (!st) return pre + '–';
+    const num = Number(st.state);
+    let val = st.state;
+    if (st.state !== '' && !isNaN(num)) val = o.decimals !== undefined ? num.toFixed(o.decimals) : String(Math.round(num * 10) / 10);
+    const unit = o.unit !== undefined ? o.unit : st.attributes.unit_of_measurement || '';
+    return pre + val + (unit ? ' ' + unit : '');
+  }
+
+  _clock(entity, kind) {
+    const st = entity && this._hass ? this._hass.states[entity] : null;
+    if (!st) return '–';
+    const v = String(st.state);
+    if (v === 'unavailable' || v === 'unknown' || v === '') return '–';
+    const lang = (this._hass.locale && this._hass.locale.language) || this._hass.language || 'de';
+    try {
+      if (kind === 'date') {
+        const m = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        const d = m ? new Date(+m[1], +m[2] - 1, +m[3]) : /^\d{4}-\d{2}-\d{2}[T ]/.test(v) ? new Date(v) : null;
+        if (d && !isNaN(d)) return d.toLocaleDateString(lang, { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' });
+      } else {
+        const sec = this._c.time_seconds === true;
+        const m = v.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+        if (m) return m[1].padStart(2, '0') + ':' + m[2] + (sec && m[3] ? ':' + m[3] : '');
+        if (/^\d{4}-\d{2}-\d{2}[T ]/.test(v)) {
+          const d = new Date(v);
+          if (!isNaN(d)) return d.toLocaleTimeString(lang, { hour: '2-digit', minute: '2-digit', ...(sec ? { second: '2-digit' } : {}) });
+        }
+      }
+    } catch (e) { /* Rohwert anzeigen */ }
+    return v;
+  }
+
+  // Ruhemodus aktiv? (immer / Sensor an / Zeitfenster / Systemeinstellung "Animationen reduzieren")
+  _calm() {
+    const k = this._c.calm;
+    if (!k || typeof k !== 'object') return false;
+    if (k.always === true) return true;
+    if (k.follow_system === true && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return true;
+    if (k.entity && this._hass) {
+      const st = this._hass.states[k.entity];
+      if (st && ['on', 'below_horizon', 'night', 'true'].includes(String(st.state))) return true;
+    }
+    if (k.from && k.to) {
+      const mins = (t) => {
+        const m = String(t).match(/^(\d{1,2}):(\d{2})/);
+        return m ? +m[1] * 60 + +m[2] : null;
+      };
+      const a = mins(k.from);
+      const b = mins(k.to);
+      if (a !== null && b !== null && a !== b) {
+        const d = new Date();
+        const now = d.getHours() * 60 + d.getMinutes();
+        return a < b ? now >= a && now < b : now >= a || now < b;
+      }
+    }
+    return false;
+  }
+
+  // Schalter am Kreis: schaltet den Verbraucher (switch, light, input_boolean, ...)
+  _toggleSw(key) {
+    const it = (this._sw || []).find((x) => x.key === key);
+    if (it) this._swCall(it.entity, it.confirm, it.name);
+  }
+
+  // Entität schalten: Schalter/Licht/... umschalten, Tor öffnen/schließen, Schloss auf-/zusperren, Taste drücken
+  _swCall(entity, confirm, name) {
+    if (!entity || !this._hass) return;
+    const st = this._hass.states[entity];
+    if (!st || st.state === 'unavailable') return;
+    const dom = entity.split('.')[0];
+    const v = String(st.state);
+    const q = dom === 'lock' ? (v === 'locked' ? 'aufsperren?' : 'zusperren?') : dom === 'cover' ? (v === 'closed' ? 'öffnen?' : 'schließen?') : v === 'on' ? 'ausschalten?' : 'einschalten?';
+    if (confirm && !window.confirm((name || entity) + ' ' + q)) return;
+    let svc = ['homeassistant', 'toggle'];
+    if (dom === 'button' || dom === 'input_button') svc = [dom, 'press'];
+    else if (dom === 'scene' || dom === 'script') svc = [dom, 'turn_on'];
+    else if (dom === 'cover') svc = ['cover', 'toggle'];
+    else if (dom === 'lock') svc = ['lock', v === 'locked' ? 'unlock' : 'lock'];
+    this._hass.callService(svc[0], svc[1], { entity_id: entity });
+  }
+
+  // Schalter-Entität eines Status-Eintrags (switch: true = der Sensor selbst, oder eine andere Entität)
+  _stSwEnt(o, j) {
+    if (j >= 0 && o.ents[j] && typeof o.ents[j].switch === 'string') return o.ents[j].switch;
+    if (typeof o.switch === 'string') return o.switch;
+    if (o.switch === true) {
+      if (j >= 0) return o.ents[j] ? o.ents[j].entity : null;
+      return o.ents.length === 1 ? o.ents[0].entity : null;
+    }
+    return null;
+  }
+
+  _esc(t) {
+    return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // ---- Status (Garagentor, Fenster, Türen) ----
+  _stKind(o) {
+    if (o.kind && ST_ICONS[o.kind]) return o.kind;
+    const e = o.ents[0].entity;
+    const st = this._hass && this._hass.states[e];
+    const dc = st && st.attributes ? st.attributes.device_class : '';
+    if (e.startsWith('lock.')) return 'lock';
+    if (dc === 'garage_door' || dc === 'garage') return 'garage';
+    if (dc === 'window') return 'window';
+    return 'door';
+  }
+
+  _stEnt(o, ent) {
+    const st = this._hass && this._hass.states[ent.entity];
+    const dom = ent.entity.split('.')[0];
+    const nm0 = ent.name || (st && st.attributes.friendly_name) || ent.entity;
+    if (!st || st.state === 'unavailable' || st.state === 'unknown') return { known: false, open: false, alert: false, label: '–', cls: 'unknown', col: '#888', name: nm0 };
+    const v = String(st.state);
+    // Zustandstexte erkennen (englisch und deutsch, z. B. Template-/ESPHome-Sensoren: "Geöffnet", "Öffnet", "Schließt", "Geschlossen")
+    const vl = v.trim().toLowerCase();
+    const lst = (a) => (Array.isArray(a) ? a : a ? [a] : []).map((x) => String(x).trim().toLowerCase());
+    const W_OPEN = ['on', 'open', 'opened', 'true', 'unlocked', 'tilted', 'offen', 'geöffnet', 'geoeffnet', 'aufgesperrt', 'entriegelt', 'gekippt', 'auf'];
+    const W_CLOSED = ['off', 'closed', 'false', 'locked', 'zu', 'geschlossen', 'zugesperrt', 'zugesperrt', 'abgesperrt', 'verriegelt'];
+    const W_OPENING = ['opening', 'öffnet', 'oeffnet', 'öffnen', 'wird geöffnet', 'öffnend', 'aufgehend'];
+    const W_CLOSING = ['closing', 'schließt', 'schliesst', 'schließen', 'wird geschlossen', 'schließend'];
+    const oS = lst(o.open_states);
+    const cS = lst(o.closed_states);
+    let moving = '';
+    let open;
+    if (oS.includes(vl)) open = true;
+    else if (cS.includes(vl)) open = false;
+    else if (W_OPENING.includes(vl) || (dom === 'cover' && vl === 'opening')) { open = true; moving = 'öffnet'; }
+    else if (W_CLOSING.includes(vl) || (dom === 'cover' && vl === 'closing')) { open = true; moving = 'schließt'; }
+    else if (W_OPEN.includes(vl)) open = true;
+    else if (W_CLOSED.includes(vl)) open = false;
+    else open = dom === 'cover' ? vl !== 'closed' : dom === 'lock' ? vl !== 'locked' : true; // unbekannter Text: lieber als "nicht zu" melden
+    if (o.invert) open = !open;
+    let label = open ? 'offen' : 'zu';
+    if (moving) label = moving;
+    if (dom === 'lock' && v === 'jammed') label = 'klemmt';
+    if (open && o.open_text) label = o.open_text;
+    if (!open && o.closed_text) label = o.closed_text;
+    const secs = open && st.last_changed ? (Date.now() - new Date(st.last_changed).getTime()) / 1000 : 0;
+    const mins = secs / 60;
+    const alert = open && o.warn_after !== undefined && secs >= Number(o.warn_after);
+    const cls = alert ? 'alert' : open ? 'open' : 'closed';
+    const col = alert ? o.alert_color || '#e53935' : open ? o.open_color || '#fb8c00' : o.closed_color || '#43a047';
+    return { known: true, open, alert, label, mins, secs, cls, col, name: nm0 };
+  }
+
+  _stEval(o) {
+    const ents = o.ents.map((e) => this._stEnt(o, e));
+    const n = ents.length;
+    const open = ents.filter((x) => x.open).length;
+    const alert = ents.some((x) => x.alert);
+    const known = ents.some((x) => x.known);
+    const ic = ST_ICONS[this._stKind(o)] || ST_ICONS.door;
+    const cls = !known ? 'unknown' : alert ? 'alert' : open ? 'open' : 'closed';
+    const col = cls === 'unknown' ? '#888' : alert ? o.alert_color || '#e53935' : open ? o.open_color || '#fb8c00' : o.closed_color || '#43a047';
+    const icon = open ? o.icon_open || o.icon || ic[1] : o.icon || ic[0];
+    const nm = o.name || (n === 1 ? ents[0].name : '');
+    let text;
+    if (!known) text = nm + ' –';
+    else if (n === 1) text = nm + ' ' + ents[0].label + (ents[0].open && ents[0].secs >= 1 && !(ents[0].label === 'öffnet' || ents[0].label === 'schließt') ? ' · ' + (ents[0].secs < 60 ? Math.floor(ents[0].secs) + ' s' : this._fmtDur(ents[0].secs / 3600)) : '');
+    else text = open ? `${nm}: ${open} von ${n} offen` : `${nm} zu`;
+    return { ents, n, open, alert, known, cls, col, icon, text };
+  }
+
+  _stSwClick(i) {
+    const o = (this._st || [])[Number(i)];
+    if (!o) return;
+    this._swCall(this._stSwEnt(o, -1), o.switch_confirm === true, o.name);
+  }
+
+  _stClick(ref) {
+    const [i, j] = String(ref).split(':').map(Number);
+    const o = (this._st || [])[i];
+    if (!o) return;
+    const ev = this._stEval(o);
+    let ent = j >= 0 ? o.ents[j] : o.ents[Math.max(0, ev.ents.findIndex((x) => x.open))];
+    if (!ent) ent = o.ents[0];
+    if (o.toggle === true) {
+      const st = this._hass && this._hass.states[ent.entity];
+      if (!st || st.state === 'unavailable') return;
+      const dom = ent.entity.split('.')[0];
+      const nm = o.name || ent.name || ent.entity;
+      const q = dom === 'lock' ? (st.state === 'locked' ? 'aufsperren?' : 'zusperren?') : dom === 'cover' ? (st.state === 'closed' ? 'öffnen?' : 'schließen?') : 'umschalten?';
+      if (o.confirm === true && !window.confirm(nm + ' ' + q)) return;
+      const svc = dom === 'cover' ? ['cover', 'toggle'] : dom === 'lock' ? ['lock', st.state === 'locked' ? 'unlock' : 'lock'] : ['homeassistant', 'toggle'];
+      this._hass.callService(svc[0], svc[1], { entity_id: ent.entity });
+    } else if (this._o && this._o.tap) {
+      this._moreInfo(ent.entity);
+    }
+  }
+
+  _moreInfo(entityId) {
+    if (!entityId) return;
+    this.dispatchEvent(new CustomEvent('hass-more-info', { detail: { entityId }, bubbles: true, composed: true }));
+  }
+
+  // Sensor, dessen Verlauf beim Antippen eines Kreises geöffnet wird
+  _tapEntity(cfg) {
+    const f = (x) => (x && typeof x === 'object' ? x.entity : x);
+    return cfg.tap_entity || cfg.power || cfg.import_power || cfg.discharge_power || cfg.export_power || cfg.charge_power || cfg.soc || cfg.live || cfg.max || cfg.current || cfg.voltage || f(cfg.temperature) || f(cfg.frequency) || null;
+  }
+
+  _freqNum(spec) {
+    const o = typeof spec === 'string' ? { entity: spec } : spec || {};
+    const st = o.entity && this._hass ? this._hass.states[o.entity] : null;
+    if (!st) return null;
+    let v = parseFloat(st.state);
+    if (isNaN(v)) return null;
+    if (st.attributes.unit_of_measurement === 'mHz') v /= 1000;
+    return v;
+  }
+
+  // Grenzwerte: gibt zurück, welche Werte außerhalb liegen
+  _limits(v, i, f, imax) {
+    const L = this._lim;
+    const lim = imax !== undefined && imax !== null && !isNaN(Number(imax)) ? Number(imax) : L.imax;
+    return {
+      v: v !== null && v !== undefined && (v < L.vmin || v > L.vmax),
+      i: i !== null && i !== undefined && lim !== null && Math.abs(i) > lim,
+      f: f !== null && f !== undefined && (f < L.fmin || f > L.fmax),
+    };
+  }
+
+  _socCol(s) {
+    return s < 20 ? '#e53935' : s < 40 ? '#fbc02d' : '#43a047';
+  }
+
+  _fmtDur(h) {
+    if (!isFinite(h) || h < 0) return '–';
+    if (h >= 100) return '> 99 h';
+    const m = Math.round(h * 60);
+    if (m < 60) return m + ' min';
+    return Math.floor(m / 60) + ' h ' + String(m % 60).padStart(2, '0') + ' min';
+  }
+
+  _freq(spec) {
+    const o = typeof spec === 'string' ? { entity: spec } : spec || {};
+    const st = o.entity && this._hass ? this._hass.states[o.entity] : null;
+    if (!st) return '– Hz';
+    let v = parseFloat(st.state);
+    if (isNaN(v)) return '– Hz';
+    if (st.attributes.unit_of_measurement === 'mHz') v /= 1000;
+    return v.toFixed(o.decimals !== undefined ? o.decimals : 2) + ' Hz';
+  }
+
+  _temp(spec) {
+    const o = typeof spec === 'string' ? { entity: spec } : spec || {};
+    const st = o.entity && this._hass ? this._hass.states[o.entity] : null;
+    if (!st) return '– °C';
+    let v = parseFloat(st.state);
+    if (isNaN(v)) return '– °C';
+    const u = st.attributes.unit_of_measurement;
+    if (u === '°F') v = ((v - 32) * 5) / 9;
+    else if (u === 'K') v -= 273.15;
+    return v.toFixed(o.decimals !== undefined ? o.decimals : 1) + ' °C';
+  }
+
+  _fmtK(w) {
+    if (w === null) return '–';
+    return Math.abs(w) >= 1000 ? (w / 1000).toFixed(1) + ' kW' : Math.round(w) + ' W';
+  }
+
+  _secText(list) {
+    const arr = Array.isArray(list) ? list : [list];
+    return arr
+      .map((s) => {
+        if (!s) return null;
+        const o = typeof s === 'string' ? { entity: s } : s;
+        const st = this._hass.states[o.entity];
+        let val = '–';
+        let unit = '';
+        if (st) {
+          const num = Number(st.state);
+          if (st.state !== '' && !isNaN(num)) {
+            val = o.decimals !== undefined ? num.toFixed(o.decimals) : String(Math.round(num * 10) / 10);
+          } else {
+            val = st.state;
+          }
+          unit = o.unit !== undefined ? o.unit : st.attributes.unit_of_measurement || '';
+        } else if (o.unit !== undefined) {
+          unit = o.unit;
+        }
+        return `${o.name ? o.name + ' ' : ''}${val}${unit ? ' ' + unit : ''}`;
+      })
+      .filter(Boolean)
+      .join(' · ');
+  }
+
+  _update() {
+    if (!this._nodes || !this.shadowRoot.querySelector('svg')) return;
+    const sr = this.shadowRoot;
+    const hd = sr.querySelector('.hd');
+    if (hd) hd.textContent = this._clock(this._c.date, 'date');
+    const ht = sr.querySelector('.ht');
+    if (ht) ht.textContent = this._clock(this._c.time, 'time');
+    const texts = (n) => sr.querySelectorAll('g.node')[this._nodes.indexOf(n)].querySelectorAll('text');
+    const by = {};
+    const OPT = this._o || {};
+    // Ruhemodus
+    const calm = this._calm();
+    const calmDots = calm ? (this._c.calm.dots === 'off' || this._c.calm.dots === 'normal' ? this._c.calm.dots : 'slow') : 'normal';
+    const cardEl = sr.querySelector('ha-card');
+    if (cardEl) cardEl.classList.toggle('calm', calm);
+    // Status (Garagentor, Fenster, Türen): Kopfzeile, Kreise unten, Abzeichen
+    const stEv = (this._st || []).map((o) => this._stEval(o));
+    // sekündlich neu zeichnen, solange eine Sekundenanzeige läuft oder warn_after noch aussteht
+    this._stLive = stEv.some((e, i) => e.ents.some((x) => x.open && x.secs !== undefined && (x.secs < 60 || (this._st[i].warn_after !== undefined && !x.alert))));
+    const hs = sr.querySelector('.hs');
+    if (hs) {
+      const html = (this._st || [])
+        .map((o, i) => (o.show.includes('header') ? `<span class="sp ${stEv[i].cls}" data-st="${i}:-1" style="--sc:${stEv[i].col}"><ha-icon icon="${stEv[i].icon}"></ha-icon>${this._esc(stEv[i].text)}${this._stSwEnt(o, -1) ? `<span class="spw" data-stsw="${i}" title="Schalten"><ha-icon icon="mdi:power"></ha-icon></span>` : ''}</span>` : ''))
+        .join('');
+      if (html !== this._hsHtml) {
+        this._hsHtml = html;
+        hs.innerHTML = html;
+      }
+    }
+    (this._stCirc || []).forEach((q) => {
+      const o = this._st[q.i];
+      const ev = stEv[q.i];
+      const x = ev.ents[q.j];
+      const id = q.i + '_' + q.j;
+      const ic = ST_ICONS[this._stKind(o)] || ST_ICONS.door;
+      const g = sr.getElementById('stc_' + id);
+      const k = sr.getElementById('stk_' + id);
+      const t = sr.getElementById('stt_' + id);
+      const nmE = sr.getElementById('stn_' + id);
+      const iE = sr.getElementById('sti_' + id);
+      if (!g || !x) return;
+      g.classList.toggle('alert', x.cls === 'alert');
+      k.setAttribute('stroke', x.col);
+      k.setAttribute('stroke-opacity', x.cls === 'closed' ? '0.6' : '1');
+      t.textContent = x.label;
+      t.style.fill = x.col;
+      let nm = String(x.name);
+      if (o.ents.length === 1 && o.name) nm = String(o.name);
+      else if (o.name && nm.toLowerCase().startsWith(String(o.name).toLowerCase() + ' ')) nm = nm.slice(o.name.length + 1);
+      nmE.textContent = nm.length > 14 ? nm.slice(0, 13) + '…' : nm;
+      const icon = x.open ? o.icon_open || o.icon || ic[1] : o.icon || ic[0];
+      if (iE) {
+        if (iE.getAttribute('icon') !== icon) iE.setAttribute('icon', icon);
+        iE.style.color = x.col;
+      }
+    });
+    (this._stb || []).forEach((b) => {
+      const o = this._st[b.i];
+      const ev = stEv[b.i];
+      const g = sr.getElementById('stb_' + b.i);
+      const k = sr.getElementById('stbk_' + b.i);
+      const iE = sr.getElementById('stbi_' + b.i);
+      const cE = sr.getElementById('stbc_' + b.i);
+      const nE = sr.getElementById('stbn_' + b.i);
+      if (!g) return;
+      const hide = o.hide_closed === true && !ev.open;
+      g.setAttribute('visibility', hide ? 'hidden' : 'visible');
+      g.classList.toggle('alert', ev.cls === 'alert');
+      k.setAttribute('stroke', ev.col);
+      if (iE) {
+        iE.style.display = hide ? 'none' : '';
+        if (iE.getAttribute('icon') !== ev.icon) iE.setAttribute('icon', ev.icon);
+        iE.style.color = ev.col;
+      }
+      if (cE) cE.setAttribute('visibility', ev.n > 1 && ev.open > 0 ? 'visible' : 'hidden');
+      if (nE) nE.textContent = String(ev.open);
+    });
+    // Schalter am Kreis: Zustand anzeigen
+    (this._sw || []).forEach((it) => {
+      const el = sr.getElementById('sw_' + it.key);
+      const st = this._hass && this._hass.states[it.entity];
+      if (!el) return;
+      const un = !st || st.state === 'unavailable' || st.state === 'unknown';
+      el.classList.toggle('un', un);
+      el.classList.toggle('on', !un && ['on', 'open', 'unlocked', 'playing', 'heat', 'cool'].includes(String(st.state)));
+    });
+    const kidVals = (this._kids || []).map((k) => ({
+      k,
+      p: this._num(k.o.power, 'p'),
+      s: this._num(k.o.soc, 'x'),
+      i: this._num(k.o.current, 'i'),
+      v: this._num(k.o.voltage, 'v'),
+      t: k.o.temperature ? this._temp(k.o.temperature) : null,
+    }));
+    // Strompreis -> Farbe (grün = günstig, gelb = mittel, rot = teuer)
+    const gcfg = this._c.grid || {};
+    let price = null;
+    let priceCol = null;
+    if (gcfg.price) {
+      price = this._num(gcfg.price, 'x');
+      const lo = gcfg.price_low !== undefined ? Number(gcfg.price_low) : null;
+      const hi = gcfg.price_high !== undefined ? Number(gcfg.price_high) : null;
+      if (price !== null && (lo !== null || hi !== null)) {
+        priceCol = lo !== null && price <= lo ? '#43a047' : hi !== null && price >= hi ? '#e53935' : '#fbc02d';
+      }
+    }
+    // Ladestand der Batterie gesamt: eigener Sensor, sonst Mittelwert der einzelnen Batterien
+    const bnode0 = this._nodes.find((n) => n.key === 'battery');
+    let socAll = bnode0 ? this._num(bnode0.cfg.soc, 'x') : null;
+    if (socAll === null) {
+      const sv = kidVals.filter((x) => x.k.id.startsWith('bat_c') && x.s !== null).map((x) => x.s);
+      if (sv.length) socAll = sv.reduce((a, b) => a + b, 0) / sv.length;
+    }
+
+    for (const n of this._nodes) {
+      by[n.key] = n;
+      const cfg = n.cfg;
+      let p = this._num(cfg.power, 'p');
+
+      if (n.key === 'grid' || n.key === 'battery') {
+        const inKey = n.key === 'grid' ? 'import_power' : 'discharge_power'; // Richtung Haus
+        const outKey = n.key === 'grid' ? 'export_power' : 'charge_power'; // weg vom Haus
+        const a = this._num(cfg[inKey], 'p');
+        const bb = this._num(cfg[outKey], 'p');
+        if (a !== null || bb !== null) {
+          p = (a || 0) - (bb || 0);
+          n._in = a || 0;
+          n._out = bb || 0;
+        } else if (p !== null) {
+          const q = n.key === 'battery' && cfg.invert ? -p : p;
+          n._in = Math.max(q, 0);
+          n._out = Math.max(-q, 0);
+        } else if (n.key === 'grid' && kidVals.some((x) => x.k.id.startsWith('gph_') && x.p !== null)) {
+          // kein Gesamtsensor: Summe der Phasen (positiv = Bezug)
+          p = kidVals.filter((x) => x.k.id.startsWith('gph_') && x.p !== null).reduce((acc, x) => acc + x.p, 0);
+          n._in = Math.max(p, 0);
+          n._out = Math.max(-p, 0);
+        } else {
+          n._in = null;
+          n._out = null;
+        }
+      }
+      if (n.key === 'solar' && p === null) {
+        const vals = kidVals.filter((x) => x.k.id.startsWith('solar_c') && x.p !== null);
+        if (vals.length) p = vals.reduce((acc, x) => acc + x.p, 0); // Summe der Panels
+      }
+      n._p = p;
+      n._i = this._num(cfg.current, 'i');
+      n._v = this._num(cfg.voltage, 'v');
+    }
+
+    // Zonen ohne eigenen Sensor zeigen die Summe ihrer Geräte
+    for (const n of this._nodes) {
+      if (n.phKids && n._p === null) {
+        const pv = kidVals.filter((x) => n.phKids.includes(x.k.id) && x.p !== null);
+        if (pv.length) n._p = pv.reduce((acc, x) => acc + x.p, 0);
+      }
+      if (n.devNodes && n._p === null) {
+        const vals = n.devNodes.filter((d) => d._p !== null);
+        if (vals.length) n._p = vals.reduce((acc, d) => acc + d._p, 0);
+      }
+    }
+
+    // ---- Flüsse berechnen ----
+    const S = by.solar && by.solar._p !== null ? Math.abs(by.solar._p) : 0;
+    const Gi = by.grid ? by.grid._in || 0 : 0;
+    const Go = by.grid ? by.grid._out || 0 : 0;
+    const Bo = by.battery ? by.battery._in || 0 : 0; // Entladen
+    const Bi = by.battery ? by.battery._out || 0 : 0; // Laden
+    const h = this._home;
+    const balance = Math.max(0, S + Gi + Bo - Go - Bi);
+    const H = h._p !== null && h._p !== undefined ? Math.max(0, h._p) : balance;
+    if (h._p === null || h._p === undefined) {
+      h._p = by.grid || by.solar || by.battery ? balance : null;
+    }
+
+    // Netzbezug geht immer zuerst (und nur) ins Haus
+    let Hrem = H;
+    const g2h = Math.min(Gi, Hrem); Hrem -= g2h;
+    const GiRem = Gi - g2h;
+    // Solar: Haus -> Batterie -> Netz
+    let sRem = S;
+    const s2h = Math.min(sRem, Hrem); sRem -= s2h; Hrem -= s2h;
+    const s2b = Math.min(sRem, Bi); sRem -= s2b; const BiRem = Bi - s2b;
+    const s2g = Math.min(sRem, Go); const GoRem = Go - s2g;
+    // Batterie: Haus -> Netz
+    const b2h = Math.min(Bo, Hrem); const BoRem = Bo - b2h; Hrem -= b2h;
+    const b2g = Math.min(BoRem, GoRem);
+    // Netz -> Batterie nur auf Wunsch (grid_to_battery: true)
+    const g2b = this._c.grid_to_battery ? Math.min(GiRem, BiRem) : 0;
+
+    const flow = {
+      grid_home: g2h,
+      solar_home: s2h,
+      solar_grid: s2g,
+      solar_battery: s2b,
+      battery_home: b2h,
+      battery_grid: b2g - g2b,
+    };
+    for (const n of this._nodes) if (n.dev) flow[n.key] = n._p === null ? null : n._p;
+
+    // ---- Texte ----
+    for (const n of this._nodes) {
+      const t = texts(n);
+      // Geräte und Zonen ausgrauen, wenn sie (fast) nichts ziehen
+      if (n.dev && this._c.dim_idle !== false) {
+        const thr = this._c.idle_below !== undefined ? Number(this._c.idle_below) : 1;
+        const idle = n._p !== null && n._p !== undefined && Math.abs(n._p) < thr;
+        const op = idle ? String(this._c.idle_opacity !== undefined ? this._c.idle_opacity : 0.4) : '1';
+        const ge = sr.getElementById('g_' + n.key);
+        const ie = sr.getElementById('i_' + n.key);
+        if (ge) ge.setAttribute('opacity', op);
+        if (ie) ie.style.opacity = op;
+      }
+      if (n.key === 'grid' || n.key === 'battery') {
+        const toHome = n.key === 'grid' ? n.cfg.import_color : n.cfg.discharge_color; // Bezug / Entladen
+        const fromHome = n.key === 'grid' ? n.cfg.export_color : n.cfg.charge_color; // Einspeisen / Laden
+        const o = n._out || 0;
+        const i = n._in || 0;
+        n._dc = o > i ? fromHome || null : i > 0 ? toHome || null : null;
+        if (n.four && toHome) t[0].style.fill = toHome;
+      }
+      // Rand: Netzfarbe / Preisfarbe / Grenzwert-Warnfarbe
+      const fNum = n.cfg.frequency ? this._freqNum(n.cfg.frequency) : null;
+      const hit = OPT.lim ? this._limits(n._v, n._i, fNum, n.cfg.current_max) : { v: false, i: false, f: false };
+      let stroke = n._dc || n.cfg.color;
+      if (n.key === 'grid' && priceCol && gcfg.price_circle !== false && !((n._out || 0) > (n._in || 0))) stroke = priceCol;
+      if (hit.v || hit.i || hit.f) stroke = this._lim.color;
+      const circ = sr.getElementById('c_' + n.key);
+      if (circ) {
+        circ.setAttribute('stroke', stroke);
+        circ.style.setProperty('--gc', stroke);
+      }
+      const gEl = sr.getElementById('g_' + n.key);
+      if (gEl) {
+        const act = n.four ? (n._in || 0) >= 1 || (n._out || 0) >= 1 : n._p !== null && n._p !== undefined && Math.abs(n._p) >= 1;
+        gEl.classList.toggle('on', !!act);
+        gEl.classList.toggle('pulse', !!(n.dev && OPT.pulse && OPT.pulseW > 0 && n._p !== null && n._p !== undefined && Math.abs(n._p) >= OPT.pulseW));
+      }
+      const aTxt = n._i === null ? '– A' : Math.abs(n._i) < 10 ? n._i.toFixed(2) + ' A' : n._i.toFixed(1) + ' A';
+      const vTxt = n._v === null ? '– V' : n._v.toFixed(1) + ' V';
+      (n.lines || []).forEach((k, i) => {
+        const e = t[i];
+        if (!e) return;
+        e.textContent =
+          k === 'in' ? '→ ' + this._fmtP(n._in)
+          : k === 'out' ? '← ' + this._fmtP(n._out)
+          : k === 'p' ? this._fmtP(n._p)
+          : k === 'a' ? aTxt
+          : k === 'v' ? vTxt
+          : k === 't' ? this._temp(n.cfg.temperature)
+          : k === 'f' ? this._freq(n.cfg.frequency)
+          : this._extra(n.cfg.extra[Number(k.slice(1))]);
+        if (k === 'a' || k === 'v' || k === 'f') e.classList.toggle('lim', !!(k === 'a' ? hit.i : k === 'v' ? hit.v : hit.f));
+      });
+      if (n.key === 'battery') {
+        const soc = this._num(n.cfg.soc, 'x');
+        const el = sr.getElementById('soc_battery');
+        if (el) el.textContent = soc === null ? '– %' : `${Math.round(soc)} %`;
+        // Icon passend zum Ladestand
+        const bi = sr.getElementById('i_battery');
+        if (bi && n.cfg.soc_icon !== false && !(this._c.battery && this._c.battery.icon) && socAll !== null) {
+          const q = Math.max(0, Math.min(100, Math.round(socAll / 10) * 10));
+          const chg = (n._out || 0) > (n._in || 0);
+          const base = chg ? 'mdi:battery-charging' : 'mdi:battery';
+          const ic = q >= 100 ? (chg ? 'mdi:battery-charging-100' : 'mdi:battery') : q <= 0 ? base + '-outline' : base + '-' + q;
+          if (bi.getAttribute('icon') !== ic) bi.setAttribute('icon', ic);
+        }
+      }
+      // Ring: Ladestand (Batterie) bzw. Auslastung (Solar)
+      const cg = sr.getElementById('cg_' + n.key);
+      if (cg && n.ringC) {
+        let frac = null;
+        let rc = null;
+        if (n.capRing === 'soc') {
+          if (socAll !== null) frac = socAll / 100;
+          rc = socAll !== null ? this._socCol(socAll) : null;
+        } else {
+          let mx = this._solMax;
+          if (mx !== null && mx !== undefined && isNaN(Number(mx))) mx = this._num(mx, 'p');
+          mx = Number(mx);
+          if (n._p !== null && n._p !== undefined && mx > 0) frac = Math.abs(n._p) / mx;
+        }
+        if (frac === null) {
+          cg.setAttribute('opacity', '0');
+        } else {
+          const f = Math.max(0, Math.min(frac, 1));
+          cg.setAttribute('stroke-dasharray', `${(f * n.ringC).toFixed(1)} ${n.ringC.toFixed(1)}`);
+          if (rc) cg.setAttribute('stroke', rc);
+          cg.setAttribute('opacity', f < 0.005 ? '0' : '1');
+        }
+      }
+      const sec = sr.getElementById('sec_' + n.key);
+      if (sec) sec.textContent = n.cfg.secondary ? this._secText(n.cfg.secondary) : '';
+    }
+
+    kidVals.forEach((x) => {
+      // Untergeräte ausgrauen, wenn sie (fast) nichts ziehen
+      if (/^(z\d+)?d\d+c\d+$/.test(x.k.id) && this._c.dim_idle !== false) {
+        const thr = this._c.idle_below !== undefined ? Number(this._c.idle_below) : 1;
+        const idle = x.p !== null && Math.abs(x.p) < thr;
+        const kg = sr.getElementById('kg_' + x.k.id);
+        if (kg) kg.setAttribute('opacity', idle ? String(this._c.idle_opacity !== undefined ? this._c.idle_opacity : 0.4) : '1');
+      }
+      const put = (q, txt) => {
+        const e = sr.getElementById('k' + q + '_' + x.k.id);
+        if (e) e.textContent = txt;
+      };
+      put('p', this._fmtK(x.p));
+      put('s', x.s === null ? '– %' : Math.round(x.s) + ' %');
+      put('a', x.i === null ? '– A' : x.i.toFixed(2) + ' A');
+      put('v', x.v === null ? '– V' : x.v.toFixed(1) + ' V');
+      put('t', x.t);
+      // Grenzwerte (Strom/Spannung) und Ladestand-Ring der kleinen Kreise
+      const kh = OPT.lim ? this._limits(x.v, x.i, null, x.k.o.current_max) : { v: false, i: false };
+      const kc = sr.getElementById('kc_' + x.k.id);
+      if (kc && x.k.id !== 'peak_c0') {
+        if (kh.v || kh.i) {
+          kc.setAttribute('stroke', this._lim.color);
+          kc.setAttribute('stroke-opacity', '1');
+        } else {
+          kc.setAttribute('stroke', x.k.col);
+          kc.setAttribute('stroke-opacity', x.k.socRing ? '0.3' : '1');
+        }
+      }
+      const ea = sr.getElementById('ka_' + x.k.id);
+      if (ea) ea.classList.toggle('lim', !!kh.i);
+      const ev = sr.getElementById('kv_' + x.k.id);
+      if (ev) ev.classList.toggle('lim', !!kh.v);
+      const ks = sr.getElementById('kr_' + x.k.id);
+      if (ks) {
+        if (x.s === null) {
+          ks.setAttribute('opacity', '0');
+        } else {
+          const f = Math.max(0, Math.min(x.s / 100, 1));
+          ks.setAttribute('stroke-dasharray', `${(f * x.k.KC).toFixed(1)} ${x.k.KC.toFixed(1)}`);
+          ks.setAttribute('stroke', this._socCol(x.s));
+          ks.setAttribute('opacity', f < 0.005 ? '0' : '1');
+        }
+      }
+      // Punkte: positiv = vom kleinen Kreis zum Haupt-Kreis (Panel liefert / Batterie entlädt); invert: true dreht um
+      flow[x.k.id] = x.p === null ? null : x.k.o.invert ? -x.p : x.p;
+    });
+
+    // ---- Haus-Ring: Anteil der Untergruppen am Hausverbrauch ----
+    const hnode = by.home;
+    if (hnode && hnode.groups) {
+      const CC = hnode.ringC;
+      const vals = hnode.groups.map((g) => Math.max(0, g._p || 0));
+      const sum = vals.reduce((a, b) => a + b, 0);
+      const denom = Math.max(hnode._p || 0, sum);
+      let acc = 0;
+      hnode.groups.forEach((g, i) => {
+        const el = sr.getElementById('hs_' + g.key);
+        const len = denom > 0 ? (vals[i] / denom) * CC : 0;
+        const gap = len > 6 ? 2 : 0;
+        if (el) {
+          el.setAttribute('stroke-dasharray', `${Math.max(0, len - gap).toFixed(1)} ${CC.toFixed(1)}`);
+          el.setAttribute('stroke-dashoffset', (-(acc + gap / 2)).toFixed(1));
+          el.setAttribute('opacity', len < 0.5 ? '0' : '1');
+        }
+        acc += len;
+      });
+    }
+
+    // ---- Zählerstände unter dem Netz-Kreis ----
+    if (this._gridMeter) {
+      const gm = this._gridMeter;
+      const m0 = sr.getElementById('mt_0');
+      const m1 = sr.getElementById('mt_1');
+      if (m0) m0.textContent = this._meter(gm.import, gm.import_name || 'Bezug', gm.decimals);
+      if (m1) m1.textContent = gm.export ? this._meter(gm.export, gm.export_name || 'Einspeisung', gm.decimals) : '';
+    }
+
+    // ---- 15-Minuten-Spitze: Ring, Warnfarbe, kleiner Kreis ----
+    if (this._peakCfg) {
+      const pc = this._peakCfg;
+      const mx = this._num(pc.max, 'p');
+      const lv = this._num(pc.live, 'p');
+      const ls = this._num(pc.last, 'p');
+      const fr = mx === null || lv === null ? 0 : mx > 0 ? lv / mx : lv > 0 ? 1 : 0;
+      const warnAt = (pc.warn_at !== undefined ? Number(pc.warn_at) : 90) / 100;
+      const st = fr >= 1 ? 'alert' : fr >= warnAt ? 'warn' : 'ok';
+      const col = pc[st + '_color'] || { ok: '#43a047', warn: '#fbc02d', alert: '#e53935' }[st];
+      const cls = st === 'alert' ? 'alert' : '';
+      const gn = by.grid;
+      const ring = sr.getElementById('rg_grid');
+      if (ring && gn) {
+        const f = Math.max(0, Math.min(fr, 1));
+        ring.setAttribute('stroke-dasharray', `${(f * gn.ringC).toFixed(1)} ${gn.ringC.toFixed(1)}`);
+        ring.setAttribute('stroke', col);
+        ring.setAttribute('opacity', f < 0.005 ? '0' : '1');
+        ring.setAttribute('class', cls);
+      }
+      const kc = sr.getElementById('kc_peak_c0');
+      if (kc) {
+        kc.setAttribute('stroke', col);
+        kc.setAttribute('class', cls);
+      }
+      const put = (q, txt) => {
+        const e = sr.getElementById('k' + q + '_peak_c0');
+        if (e) e.textContent = txt;
+      };
+      put('m', this._kw(mx, true));
+      put('l', 'jetzt ' + this._kw(lv));
+      put('z', 'zuletzt ' + this._kw(ls));
+    }
+
+    // ---- Punkte auf den Linien ----
+    for (const l of this._links) {
+      const f = flow[l.id];
+      const dot = sr.getElementById('dot_' + l.id);
+      const am = sr.getElementById('am_' + l.id);
+      const path = sr.getElementById('l_' + l.id);
+      if (!dot || f === null || f === undefined || Math.abs(f) < 1) {
+        if (dot) dot.setAttribute('visibility', 'hidden');
+        if (path) {
+          path.setAttribute('stroke', l.ca);
+          path.setAttribute('opacity', '0.3');
+          path.setAttribute('stroke-width', '2');
+        }
+        continue;
+      }
+      dot.setAttribute('visibility', calmDots === 'off' ? 'hidden' : 'visible');
+      if (OPT.lineW) {
+        const lw = 2 + (OPT.lineMax - 2) * this._lx(Math.abs(f));
+        if (path) path.setAttribute('stroke-width', lw.toFixed(1));
+        dot.setAttribute('r', (3 + lw * 0.75).toFixed(1));
+      }
+      const src = f >= 0 ? l.a : l.b;
+      const dst = f >= 0 ? l.b : l.a;
+      let col = src._dc || (f >= 0 ? l.ca : l.cb);
+      // Fließt etwas ins Netz (Einspeisung), hat die Linie die Netzfarbe
+      if (dst.key === 'grid' && src.key !== 'grid') col = dst._dc || (f >= 0 ? l.cb : l.ca);
+      dot.setAttribute('fill', col);
+      if (path) {
+        path.setAttribute('stroke', col);
+        path.setAttribute('opacity', '0.9');
+      }
+      am.setAttribute('dur', (this._dur(Math.abs(f)) * (calmDots === 'slow' ? 3 : 1)).toFixed(1) + 's');
+      am.setAttribute('keyPoints', f >= 0 ? '0;1' : '1;0');
+    }
+
+    // ---- Infozeile unter der Karte ----
+    const infoEl = sr.querySelector('.info');
+    if (infoEl) {
+      const I = this._c.info && typeof this._c.info === 'object' ? this._c.info : {};
+      const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const pct = (x) => Math.round(Math.max(0, Math.min(100, x))) + ' %';
+      const chips = [];
+      if (I.autarky) chips.push({ ic: 'mdi:home-lightning-bolt', t: 'Autarkie ' + (H > 0 ? pct(100 * (1 - Gi / H)) : '–') });
+      if (I.self_consumption) chips.push({ ic: 'mdi:solar-power', t: 'Eigenverbrauch ' + (S > 1 ? pct(100 * (1 - Go / S)) : '–') });
+      if (I.battery_time) {
+        const bcfg = this._c.battery || {};
+        let cap = bcfg.capacity;
+        if (cap !== undefined && isNaN(Number(cap))) {
+          const cst = this._hass && this._hass.states[cap];
+          cap = cst ? parseFloat(cst.state) / (cst.attributes.unit_of_measurement === 'Wh' ? 1000 : 1) : NaN;
+        }
+        cap = Number(cap);
+        let t = 'Akku –';
+        if (socAll !== null && cap > 0) {
+          if (Bo > 20) t = 'Akku reicht noch ' + this._fmtDur(((socAll / 100) * cap * 1000) / Bo);
+          else if (Bi > 20) t = 'Akku voll in ' + this._fmtDur((((100 - socAll) / 100) * cap * 1000) / Bi);
+          else t = 'Akku ' + Math.round(socAll) + ' % (Standby)';
+        } else if (!(cap > 0)) {
+          t = 'Akku: Kapazität fehlt';
+        }
+        chips.push({ ic: 'mdi:battery-clock', t });
+      }
+      (this._st || []).forEach((o, i) => {
+        if (o.show.includes('info')) chips.push({ dot: stEv[i].col, st: i + ':-1', t: stEv[i].text, sw: this._stSwEnt(o, -1) ? i : null });
+      });
+      if (gcfg.price) {
+        const pst = this._hass && this._hass.states[gcfg.price];
+        const u = pst && pst.attributes.unit_of_measurement ? ' ' + pst.attributes.unit_of_measurement : '';
+        chips.push({ dot: priceCol, e: gcfg.price, t: 'Preis ' + (price === null ? '–' : price.toFixed(Math.abs(price) < 1 ? 3 : 2)) + u });
+      }
+      (Array.isArray(I.items) ? I.items : []).slice(0, 8).forEach((it) => {
+        const o = typeof it === 'string' ? { entity: it } : it;
+        chips.push({ ic: o.icon, e: o.entity, t: this._extra(o) });
+      });
+      const html = chips
+        .map((q) => `<span class="chip"${q.e ? ` data-e="${esc(q.e)}"` : ''}${q.st ? ` data-st="${q.st}" data-e="x"` : ''}>${q.dot ? `<span class="dot" style="background:${q.dot}"></span>` : q.ic ? `<ha-icon icon="${esc(q.ic)}"></ha-icon>` : ''}${esc(q.t)}${q.sw !== null && q.sw !== undefined ? `<span class="spw" data-stsw="${q.sw}" title="Schalten"><ha-icon icon="mdi:power"></ha-icon></span>` : ''}</span>`)
+        .join('');
+      if (html !== this._infoHtml) {
+        this._infoHtml = html;
+        infoEl.innerHTML = html;
+      }
+    }
+  }
+}
+
+/* ================= Visueller Editor ================= */
+// Hilfsfunktionen für das ha-form-Schema
+const vE = (name, label, helper) => ({ name, label, helper, selector: { entity: {} } });
+const vT = (name, label, helper) => ({ name, label, helper, selector: { text: {} } });
+const vI = (name, label) => ({ name, label, selector: { icon: {} } });
+const vB = (name, label, helper) => ({ name, label, helper, selector: { boolean: {} } });
+const vN = (name, label, helper, o) => ({ name, label, helper, selector: { number: { mode: 'box', ...(o || {}) } } });
+const vG = (...schema) => ({ type: 'grid', name: '', schema });
+const vX = (name, title, schema) => ({ type: 'expandable', name, title, schema });
+const vF = (label, selector) => ({ label, selector });
+const vText = { text: {} };
+const vEnt = { entity: {} };
+const vMeasure = () => [vG(vE('current', 'Strom (A)'), vE('voltage', 'Spannung (V)')), vG(vE('temperature', 'Temperatur (°C)'), vN('current_max', 'Strom-Grenze (A)', 'Rot ab hier')) ];
+const vLook = () => [
+  vG(vT('name', 'Name'), vI('icon', 'Icon')),
+  vG(vT('color', 'Farbe', 'Farbcode, z. B. #ff9800'), vT('line_color', 'Linienfarbe'), vT('icon_color', 'Icon-Farbe'), vT('text_color', 'Zahlenfarbe')),
+];
+// Felder für Listeneinträge (Geräte, Zonen, Phasen, Panels, Batterien)
+const vChildFields = {
+  switch: vF('Schalter (Entität zum Ein-/Ausschalten, z. B. switch.herd)', vEnt),
+  switch_confirm: vF('Vor dem Schalten nachfragen', { boolean: {} }),
+  current_max: vF('Strom-Grenze (A)', { number: { mode: 'box', min: 0 } }),
+  name: vF('Name', vText),
+  power: vF('Leistung (W)', vEnt),
+  current: vF('Strom (A)', vEnt),
+  voltage: vF('Spannung (V)', vEnt),
+  temperature: vF('Temperatur (°C)', vEnt),
+  color: vF('Farbe (z. B. #ff9800, Standard: Farbe des Geräts)', vText),
+};
+const vDevFields = {
+  switch: vF('Schalter (Entität zum Ein-/Ausschalten, z. B. switch.herd)', vEnt),
+  switch_confirm: vF('Vor dem Schalten nachfragen', { boolean: {} }),
+  current_max: vF('Strom-Grenze (A)', { number: { mode: 'box', min: 0 } }),
+  name: vF('Name', vText),
+  icon: vF('Icon', { icon: {} }),
+  power: vF('Leistung (W)', vEnt),
+  current: vF('Strom (A)', vEnt),
+  voltage: vF('Spannung (V)', vEnt),
+  temperature: vF('Temperatur (°C)', vEnt),
+  color: vF('Farbe (z. B. #ff9800)', vText),
+  children: vF('Untergeräte (kleine Kreise unter dem Gerät, bis 6)', { object: { multiple: true, label_field: 'name', fields: vChildFields } }),
+};
+const vPhaseFields = {
+  current_max: vF('Strom-Grenze (A)', { number: { mode: 'box', min: 0 } }),
+  name: vF('Name (leer = L1, L2, …)', vText),
+  power: vF('Leistung (W)', vEnt),
+  current: vF('Strom (A)', vEnt),
+  voltage: vF('Spannung (V)', vEnt),
+  color: vF('Farbe (z. B. #ff9800)', vText),
+};
+const vGridPhFields = {
+  current_max: vF('Strom-Grenze (A)', { number: { mode: 'box', min: 0 } }),
+  name: vF('Name (leer = L1, L2, …)', vText),
+  power: vF('Leistung (W, positiv = Bezug)', vEnt),
+  current: vF('Strom (A)', vEnt),
+  voltage: vF('Spannung (V)', vEnt),
+  color: vF('Farbe (z. B. #ff9800)', vText),
+};
+const vPanelFields = {
+  name: vF('Name', vText),
+  power: vF('Leistung (W)', vEnt),
+  current: vF('Strom (A)', vEnt),
+  voltage: vF('Spannung (V)', vEnt),
+  color: vF('Farbe (z. B. #ff9800)', vText),
+};
+const vBatFields = {
+  name: vF('Name', vText),
+  soc: vF('Ladestand (%)', vEnt),
+  power: vF('Leistung (W, positiv = Entladen)', vEnt),
+  current: vF('Strom (A)', vEnt),
+  voltage: vF('Spannung (V)', vEnt),
+  temperature: vF('Temperatur (°C)', vEnt),
+  color: vF('Farbe (z. B. #ff9800)', vText),
+};
+const vStatusFields = {
+  name: vF('Name (z. B. Garagentor, Fenster)', vText),
+  entity: vF('Sensor (ein Tor, Fenster oder eine Tür)', vEnt),
+  entities: vF('Mehrere Sensoren (z. B. alle Fenster)', { entity: { multiple: true } }),
+  show: vF('Wo anzeigen (leer = Kopfzeile)', { select: { multiple: true, mode: 'list', options: [{ value: 'header', label: 'Kopfzeile' }, { value: 'info', label: 'Infozeile' }, { value: 'circles', label: 'Kreise unten (einer pro Sensor)' }] } }),
+  at: vF('Abzeichen am Kreis mit diesem Namen (z. B. Garage / Keller)', vText),
+  kind: vF('Art (leer = automatisch)', { select: { mode: 'dropdown', options: [{ value: 'garage', label: 'Garagentor' }, { value: 'window', label: 'Fenster' }, { value: 'door', label: 'Tür' }, { value: 'lock', label: 'Schloss' }] } }),
+  warn_after: vF('Rot und blinkend nach (Sekunden offen)', { number: { mode: 'box', min: 1 } }),
+  hide_closed: vF('Abzeichen nur zeigen, wenn offen', { boolean: {} }),
+  invert: vF('Sensor „an“ bedeutet zu', { boolean: {} }),
+  switch: vF('Schalter-Knopf (Entität, z. B. cover.garagentor; bei einem Sensor derselbe)', vEnt),
+  switch_confirm: vF('Vor dem Schalten mit dem Knopf nachfragen', { boolean: {} }),
+  toggle: vF('Antippen schaltet (Tor öffnen/schließen, Schloss)', { boolean: {} }),
+  confirm: vF('Vor dem Schalten nachfragen', { boolean: {} }),
+};
+const vList = (name, label, fields, labelField) => ({
+  name,
+  label,
+  selector: { object: { multiple: true, label_field: labelField, fields } },
+});
+const vZoneFields = {
+  ...vDevFields,
+  phases: vF('Phasen (kleine Kreise über der Zone)', { object: { multiple: true, label_field: 'name', fields: vPhaseFields } }),
+  devices: vF('Geräte der Zone', { object: { multiple: true, label_field: 'name', fields: vDevFields } }),
+};
+
+const VAW_SCHEMA = [
+  vX('', 'Kopfzeile (Titel, Datum, Uhrzeit)', [
+    vT('title', 'Titel', 'Erscheint links oben in der Karte'),
+    vG(vE('date', 'Datum-Sensor', 'z. B. sensor.date'), vE('time', 'Uhrzeit-Sensor', 'z. B. sensor.time')),
+    vB('time_seconds', 'Uhrzeit mit Sekunden anzeigen'),
+  ]),
+  vX('', 'Optik', [
+    vB('line_width', 'Linien werden mit der Leistung dicker'),
+    vN('line_width_max', 'Maximale Linienstärke', 'Standard 6', { min: 3, max: 12 }),
+    vB('glow', 'Aktive Kreise leuchten'),
+    vB('pulse', 'Starke Verbraucher pulsieren'),
+    vN('pulse_above_w', 'Pulsieren ab (W)', 'Standard 1000', { min: 0, step: 100 }),
+    vB('gradient', 'Farbverlauf und Schatten in den Kreisen'),
+    vN('number_scale', 'Größe der Zahlen in den Kreisen', '1 = normal, 0.5 bis 1.6', { min: 0.5, max: 1.6, step: 0.1 }),
+    vB('tap_action', 'Antippen öffnet den Verlauf des Sensors'),
+  ]),
+  vX('calm', 'Ruhemodus (z. B. nachts)', [
+    vB('always', 'Immer ruhig'),
+    vE('entity', 'Sensor/Schalter: ruhig, solange „an“', 'z. B. input_boolean oder sun.sun (ruhig unter dem Horizont)'),
+    vG({ name: 'from', label: 'Ruhig von', selector: { time: {} } }, { name: 'to', label: 'bis', selector: { time: {} } }),
+    vSel('dots', 'Punkte im Ruhemodus', [['slow', 'Langsam (Standard)'], ['off', 'Aus'], ['normal', 'Normal']]),
+    vN('dim', 'Helligkeit der Karte', '0.2 bis 1, Standard 0.75', { min: 0.2, max: 1, step: 0.05 }),
+    vB('follow_system', 'Auch ruhig, wenn das Gerät „Animationen reduzieren“ eingestellt hat'),
+  ]),
+  vX('', 'Grenzwerte (Warnfarbe)', [
+    vB('limit_colors', 'Kreise und Werte rot färben, wenn ein Grenzwert verletzt wird'),
+    vB('zoom', 'Zoomen und Verschieben (Strg + Mausrad, Pinch, Knöpfe + / −)'),
+    vX('limits', 'Grenzwerte', [
+      vG(vN('voltage_min', 'Spannung min. (V)', 'Standard 207'), vN('voltage_max', 'Spannung max. (V)', 'Standard 253')),
+      vN('current_max', 'Strom max. (A)', 'Standard: keine Grenze'),
+      vG(vN('frequency_min', 'Frequenz min. (Hz)', 'Standard 49.8', { step: 0.1 }), vN('frequency_max', 'Frequenz max. (Hz)', 'Standard 50.2', { step: 0.1 })),
+      vT('color', 'Warnfarbe', 'Standard #e53935'),
+    ]),
+  ]),
+  vX('info', 'Infozeile unter der Karte', [
+    vB('autarky', 'Autarkie (live)'),
+    vB('self_consumption', 'Eigenverbrauch (live)'),
+    vB('battery_time', 'Akku: Restlaufzeit bzw. Zeit bis voll (braucht die Kapazität bei Batterie)'),
+    vList('items', 'Weitere Werte (z. B. Tageswerte in kWh)', {
+      name: vF('Name', vText),
+      entity: vF('Sensor', vEnt),
+      icon: vF('Icon', { icon: {} }),
+      decimals: vF('Nachkommastellen', { number: { mode: 'box', min: 0, max: 4 } }),
+      unit: vF('Einheit (leer = vom Sensor)', vText),
+    }, 'name'),
+  ]),
+  vSel('layout', 'Layout', [['horizontal', 'Waagrecht'], ['vertical', 'Senkrecht (baut sich nach unten auf)']]),
+  vX('grid', 'Netz', [
+    vE('power', 'Leistung (ein Sensor)', 'Positiv = Bezug, negativ = Einspeisung. Alternativ unten getrennt eintragen.'),
+    vG(vE('import_power', 'Bezug (W)'), vE('export_power', 'Einspeisung (W)')),
+    ...vMeasure(),
+    vE('frequency', 'Netzfrequenz (Hz)'),
+    vE('price', 'Strompreis-Sensor', 'Erscheint als Chip in der Infozeile'),
+    vG(vN('price_low', 'Günstig bis (grün)'), vN('price_high', 'Teuer ab (rot)')),
+    vB('price_circle', 'Rand des Netz-Kreises nach Preis färben'),
+    ...vLook(),
+    vG(vT('import_color', 'Farbe bei Bezug'), vT('export_color', 'Farbe bei Einspeisung')),
+    vList('phases', 'Phasen L1/L2/L3 (kleine Kreise, bis 6)', vGridPhFields, 'name'),
+    vX('peak', '15-Minuten-Spitze (Netzentgelte)', [
+      vE('max', 'Monatsmaximum'),
+      vE('live', 'Aktuelle Viertelstunde (live)'),
+      vE('last', 'Letzte Viertelstunde'),
+      vG(vN('warn_at', 'Warnung ab (%)', 'Standard 90', { min: 1, max: 100 }), vT('name', 'Beschriftung', 'Standard: Spitze 15 min')),
+      vG(vT('ok_color', 'Farbe OK'), vT('warn_color', 'Farbe Warnung'), vT('alert_color', 'Farbe Alarm')),
+    ]),
+    vX('meter', 'Zählerstände (kWh)', [
+      vE('import', 'Zählerstand Bezug'),
+      vE('export', 'Zählerstand Einspeisung'),
+      vG(vT('import_name', 'Beschriftung Bezug'), vT('export_name', 'Beschriftung Einspeisung')),
+      vN('decimals', 'Nachkommastellen', 'Standard 1', { min: 0, max: 3 }),
+    ]),
+  ]),
+  vX('solar', 'Solar', [
+    vE('power', 'Leistung', 'Leer lassen: Summe der Panels'),
+    vN('max_power', 'Installierte Leistung (W) für den Auslastungs-Ring', 'Leer = kein Ring', { min: 0, step: 100 }),
+    ...vMeasure(),
+    ...vLook(),
+    vList('children', 'Einzelne Panels (bis 10, kleine Kreise)', vPanelFields, 'power'),
+  ]),
+  vX('battery', 'Batterie', [
+    vE('power', 'Leistung (ein Sensor)', 'Positiv = Entladen'),
+    vG(vE('discharge_power', 'Ausgangsleistung (Entladen)'), vE('charge_power', 'Eingangsleistung (Laden)')),
+    vB('invert', 'Richtung des einzelnen Leistungssensors umkehren'),
+    vE('soc', 'Ladestand (SOC)'),
+    vB('soc_in_circle', 'Ladestand im Kreis statt als kleiner Kreis'),
+    vB('soc_icon', 'Icon passt sich dem Ladestand an'),
+    vB('soc_ring', 'Ring mit dem Ladestand um die Batterie'),
+    vE('capacity', 'Kapazität (kWh)', 'Sensor, oder Zahl direkt in der YAML (z. B. 10)'),
+    ...vMeasure(),
+    ...vLook(),
+    vG(vT('charge_color', 'Farbe beim Laden'), vT('discharge_color', 'Farbe beim Entladen')),
+    vList('children', 'Einzelne Batterien (bis 10, kleine Kreise)', vBatFields, 'soc'),
+  ]),
+  vX('home', 'Haus', [
+    vE('power', 'Leistung', 'Leer lassen: Summe aus Netz, Solar und Batterie'),
+    ...vMeasure(),
+    ...vLook(),
+    vB('ring', 'Außenring mit den Anteilen der Zonen/Geräte'),
+  ]),
+  vList('zones', 'Zonen (z. B. Stockwerke, bis 6)', vZoneFields, 'name'),
+  vList('devices', 'Geräte direkt am Haus', vDevFields, 'name'),
+  vList('status', 'Status (Garagentor, Fenster, Türen)', vStatusFields, 'name'),
+  vX('', 'Weitere Karten-Optionen', [
+    vB('fullscreen_button', 'Vollbild-Knopf anzeigen'),
+    vB('dim_idle', 'Geräte mit 0 W ausgrauen'),
+    vG(vN('idle_below', 'Als „aus“ gilt unter (W)', 'Standard 1', { min: 0 }), vN('idle_opacity', 'Deckkraft ausgegraut', '0 bis 1, Standard 0.4', { min: 0, max: 1, step: 0.1 })),
+    vN('speed_max_w', 'Punkte am schnellsten bei (W)', 'Standard 3000', { min: 100, step: 100 }),
+    vB('grid_to_battery', 'Netzbezug darf auch die Batterie laden (Punkte)'),
+    vT('devices_name', 'Name der Zone für „Geräte direkt am Haus“', 'Nur wenn zusätzlich Zonen existieren, Standard: Sonstige'),
+  ]),
+];
+function vSel(name, label, opts) {
+  return { name, label, selector: { select: { mode: 'dropdown', options: opts.map(([value, l]) => ({ value, label: l })) } } };
+}
+// expandable ohne Namen = flach (gleiche Datenebene)
+VAW_SCHEMA.forEach((s) => { if (s.type === 'expandable' && s.name === '') { s.flatten = true; delete s.name; } });
+
+const VAW_MAIN = ['grid', 'solar', 'battery', 'home'];
+const VAW_ON = ['line_width', 'glow', 'pulse', 'gradient', 'tap_action', 'limit_colors', 'zoom']; // Optionen, die standardmäßig an sind
+
+// Konfiguration -> Formulardaten (Kurzformen in Listen werden zu Objekten, Standardwerte sichtbar gemacht)
+function vawToForm(cfg) {
+  const d = JSON.parse(JSON.stringify(cfg || {}));
+  const obj = (x, key) => (typeof x === 'string' ? { [key]: x } : x);
+  const list = (arr, key) => (Array.isArray(arr) ? arr.map((x) => obj(x, key)) : arr);
+  if (d.solar && d.solar.children) d.solar.children = list(d.solar.children, 'power');
+  if (d.grid && d.grid.phases) d.grid.phases = list(d.grid.phases, 'power');
+  if (d.battery && d.battery.children) d.battery.children = list(d.battery.children, 'soc');
+  const dev = (x) => {
+    const o = obj(x, 'power');
+    if (o && o.children) o.children = list(o.children, 'power');
+    return o;
+  };
+  if (d.devices) d.devices = d.devices.map(dev);
+  if (d.status) d.status = list(d.status, 'entity').map((x) => (x.switch === true && x.entity && !(x.entities && x.entities.length) ? { ...x, switch: x.entity } : x));
+  if (Array.isArray(d.zones)) {
+    d.zones = d.zones.map((z) => {
+      const zz = { ...z };
+      if (zz.phases) zz.phases = list(zz.phases, 'power');
+      if (zz.devices) zz.devices = zz.devices.map(dev);
+      return zz;
+    });
+  }
+  // temperature: {entity, decimals} -> Entität anzeigen, decimals merken
+  const walk = (o) => {
+    if (Array.isArray(o)) return o.forEach(walk);
+    if (!o || typeof o !== 'object') return;
+    if (o.temperature && typeof o.temperature === 'object') {
+      const t = o.temperature;
+      o.temperature = t.entity || '';
+      if (t.decimals !== undefined) o._temp_decimals = t.decimals;
+    }
+    Object.values(o).forEach(walk);
+  };
+  walk(d);
+  if (d.fullscreen_button === undefined) d.fullscreen_button = true;
+  if (d.dim_idle === undefined) d.dim_idle = true;
+  VAW_ON.forEach((k) => { if (d[k] === undefined) d[k] = true; });
+  d.battery = { ...(d.battery || {}) };
+  if (d.battery.soc_icon === undefined) d.battery.soc_icon = true;
+  if (d.battery.soc_ring === undefined) d.battery.soc_ring = true;
+  d.grid = { ...(d.grid || {}) };
+  if (d.grid.price_circle === undefined) d.grid.price_circle = true;
+  d.home = { ...(d.home || {}) };
+  if (d.home.ring === undefined) d.home.ring = true;
+  return d;
+}
+
+// Formulardaten -> Konfiguration (leere Werte und Standardwerte entfernen)
+function vawFromForm(data, prev) {
+  const d = JSON.parse(JSON.stringify(data || {}));
+  const walk = (o) => {
+    if (Array.isArray(o)) return o.forEach(walk);
+    if (!o || typeof o !== 'object') return;
+    if (o._temp_decimals !== undefined) {
+      if (o.temperature) o.temperature = { entity: o.temperature, decimals: o._temp_decimals };
+      delete o._temp_decimals;
+    }
+    Object.values(o).forEach(walk);
+  };
+  walk(d);
+  if (d.fullscreen_button === true) delete d.fullscreen_button;
+  if (d.dim_idle === true) delete d.dim_idle;
+  VAW_ON.forEach((k) => { if (d[k] === true) delete d[k]; });
+  if (d.battery) {
+    if (d.battery.soc_icon === true) delete d.battery.soc_icon;
+    if (d.battery.soc_ring === true) delete d.battery.soc_ring;
+  }
+  if (d.grid && d.grid.price_circle === true) delete d.grid.price_circle;
+  ['autarky', 'self_consumption', 'battery_time'].forEach((k) => { if (d.info && d.info[k] === false) delete d.info[k]; });
+  if (d.time_seconds === false) delete d.time_seconds;
+  if (d.home && d.home.ring === true) delete d.home.ring;
+  const clean = (o) => {
+    if (Array.isArray(o)) {
+      const a = o.map(clean).filter((x) => x !== undefined);
+      return a.length ? a : undefined;
+    }
+    if (o && typeof o === 'object') {
+      const r = {};
+      Object.keys(o).forEach((k) => {
+        const v = clean(o[k]);
+        if (v !== undefined) r[k] = v;
+      });
+      return Object.keys(r).length ? r : undefined;
+    }
+    if (o === undefined || o === null || o === '' || (typeof o === 'number' && isNaN(o))) return undefined;
+    return o;
+  };
+  const out = clean(d) || {};
+  // Hauptkreise, die schon in der Konfiguration standen, bleiben auch ohne Inhalt erhalten (leer = Kreis ohne Sensor)
+  VAW_MAIN.forEach((k) => {
+    if (out[k] === undefined && prev && prev[k] !== undefined && k !== 'home') out[k] = {};
+  });
+  if (d.type) out.type = d.type;
+  return out;
+}
+
+class FlowCardVAWEditor extends HTMLElement {
+  setConfig(config) {
+    this._config = config || {};
+    this._ensure();
+    this._form.data = vawToForm(this._config);
+  }
+
+  set hass(h) {
+    this._hass = h;
+    if (this._form) this._form.hass = h;
+  }
+
+  _ensure() {
+    if (this._form) return;
+    const note = document.createElement('div');
+    note.style.cssText = 'font-size:12px;opacity:.7;margin:0 0 12px';
+    note.textContent = 'Flow Card Version 52 · Sonderfälle (secondary, extra, Namen der Ringe usw.) bleiben erhalten und lassen sich im Code-Editor („YAML“) ergänzen.';
+    const form = document.createElement('ha-form');
+    form.schema = VAW_SCHEMA;
+    form.hass = this._hass;
+    form.computeLabel = (s) => s.label || s.name;
+    form.computeHelper = (s) => s.helper || '';
+    form.addEventListener('value-changed', (ev) => {
+      ev.stopPropagation();
+      const cfg = vawFromForm(ev.detail.value, this._config);
+      this._config = cfg;
+      this.dispatchEvent(new CustomEvent('config-changed', { detail: { config: cfg }, bubbles: true, composed: true }));
+    });
+    this._form = form;
+    this.appendChild(note);
+    this.appendChild(form);
+  }
+}
+customElements.define('flow-card-vaw-editor', FlowCardVAWEditor);
+
+console.info('%c FLOW-CARD-VAW %c Version 52 ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
+customElements.define('flow-card-vaw', FlowCardVAW);
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: 'flow-card-vaw',
+  name: 'Flow Card (W / A / V)',
+  description: 'Energiefluss mit Leistung, Strom und Spannung (Version 52)',
+});
