@@ -9,8 +9,9 @@ A Home Assistant dashboard card in the style of the Energy distribution card, bu
 Love the Work that i did?
 
 <a href="https://www.buymeacoffee.com/xFirefliesx">
-  <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" height="400">
+  <img src="https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=%E2%98%95&slug=xFirefliesx&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" alt="Buy me a coffee" height="60">
 </a>
+
 ## Features
 
 - Grid, solar, battery, house, zones and devices as circles with animated flow dots
