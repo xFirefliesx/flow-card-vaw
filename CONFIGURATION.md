@@ -337,7 +337,7 @@ Linien:
 Zahlen:
   number_animation: false   # true = Zahlen zählen sanft zum neuen Wert (bei gleicher Einheit)
 
-Neu in 1.0.4:
+Neu in 1.1.0:
 
 Ansichten (Tabs, ab 2 Einträgen sichtbar):
   default_view: Live     # Name oder Nummer der Startansicht

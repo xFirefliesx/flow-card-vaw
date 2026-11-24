@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.4
+## 1.1.0
 
 - **Security:** all values from the card configuration (names, icons, colours, titles) are now escaped or validated before they are put into the card's markup. Unsafe colour and icon values are ignored, names containing HTML are shown as plain text.
 - Views (`views`): tabs in one card, each with its own settings, `show` / `hide` to show only parts (for example only solar or one zone), `default_view`

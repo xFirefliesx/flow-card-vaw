@@ -140,7 +140,7 @@ Ctrl + mouse wheel (mouse wheel alone in fullscreen), pinch on touch screens, dr
 
 ## Deutsch
 
-Eine Energiefluss-Karte für Home Assistant mit Leistung (W), Strom (A) und Spannung (V) an jedem Kreis. Neu in 1.0.4: Ansichten (Tabs), Layout-Assistent, Zeitreise, Zonen-Rahmen, eigene Icons, Wert-Labels an Linien, CO₂-Chip und Partikel-Marker; außerdem werden alle Werte aus der Konfiguration jetzt maskiert (Sicherheit). Davor: Design-Vorlagen, Hintergründe, Kreisformen, Sparklines, Linienstile und erweiterte Status-Anzeigen. Installation über HACS als benutzerdefiniertes Repository (Kategorie *Dashboard*) oder manuell (siehe oben). Die vollständige, kommentierte Konfiguration steht in [CONFIGURATION.md](CONFIGURATION.md); fast alles lässt sich im visuellen Editor einstellen.
+Eine Energiefluss-Karte für Home Assistant mit Leistung (W), Strom (A) und Spannung (V) an jedem Kreis. Neu in 1.1.0: Ansichten (Tabs), Layout-Assistent, Zeitreise, Zonen-Rahmen, eigene Icons, Wert-Labels an Linien, CO₂-Chip und Partikel-Marker; außerdem werden alle Werte aus der Konfiguration jetzt maskiert (Sicherheit). Davor: Design-Vorlagen, Hintergründe, Kreisformen, Sparklines, Linienstile und erweiterte Status-Anzeigen. Installation über HACS als benutzerdefiniertes Repository (Kategorie *Dashboard*) oder manuell (siehe oben). Die vollständige, kommentierte Konfiguration steht in [CONFIGURATION.md](CONFIGURATION.md); fast alles lässt sich im visuellen Editor einstellen.
 
 ## License
 

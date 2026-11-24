@@ -3685,7 +3685,7 @@ class FlowCardVAWEditor extends HTMLElement {
     if (this._form) return;
     const note = document.createElement('div');
     note.style.cssText = 'font-size:12px;opacity:.7;margin:0 0 12px';
-    note.textContent = 'Flow Card Version 1.0.4 \u00b7 Ansichten (views) und Positionen (positions) sowie Sonderf\u00e4lle (secondary, extra, Namen der Ringe usw.) bleiben erhalten und lassen sich im Code-Editor (\u201eYAML\u201c) erg\u00e4nzen.';
+    note.textContent = 'Flow Card Version 1.1.0 \u00b7 Ansichten (views) und Positionen (positions) sowie Sonderf\u00e4lle (secondary, extra, Namen der Ringe usw.) bleiben erhalten und lassen sich im Code-Editor (\u201eYAML\u201c) erg\u00e4nzen.';
     const form = document.createElement('ha-form');
     form.schema = VAW_SCHEMA;
     form.hass = this._hass;
@@ -3704,11 +3704,11 @@ class FlowCardVAWEditor extends HTMLElement {
 }
 customElements.define('flow-card-vaw-editor', FlowCardVAWEditor);
 
-console.info('%c FLOW-CARD-VAW %c Version 1.0.4 ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
+console.info('%c FLOW-CARD-VAW %c Version 1.1.0 ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
 customElements.define('flow-card-vaw', FlowCardVAW);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'flow-card-vaw',
   name: 'Flow Card (W / A / V)',
-  description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.0.4)',
+  description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.1.0)',
 });
