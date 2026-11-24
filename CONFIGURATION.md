@@ -271,4 +271,121 @@ secondary (bei JEDEM Kreis möglich) – kleine Zusatzzeile unter dem Namen:
   secondary:
     - sensor.x
     - {entity: sensor.y, name: Tag, unit: kWh}
+Status: Rauchmelder, Temperaturen, beliebige Entitäten (zusätzlich zu Garage/Fenster/Tür/Schloss):
+  kind: smoke | gas | co | water | problem | motion | presence | light | switch | temperature | humidity | sensor
+        (leer = automatisch aus der device_class; "sensor" = beliebiger Messwert oder Text)
+  Alarm-Arten (Rauch, Gas, CO, Wasser, Störung): "an" = Alarm (rot, blinkend), sonst grün.
+  Messwerte (Temperatur, Luftfeuchte, beliebige Zahlen):
+    warn_above: 25      # orange über diesem Wert
+    warn_below: 10      # orange unter diesem Wert
+    alert_above: 30     # rot und blinkend über diesem Wert
+    alert_below: 5      # rot und blinkend unter diesem Wert
+    unit: °C            # optional, Einheit überschreiben
+    decimals: 1         # optional, Nachkommastellen
+  Texte (z. B. Heizung):
+    warn_states: [heizen]       # orange bei diesen Zuständen
+    alert_states: [störung]     # rot bei diesen Zuständen
+  Beispiel:
+    status:
+      - name: Rauchmelder
+        entities: [binary_sensor.rauch_flur, binary_sensor.rauch_kueche]
+        show: [header, circles]
+      - name: Wohnzimmer
+        entity: sensor.wohnzimmer_temperatur
+        warn_above: 25
+        alert_above: 30
+      - name: Heizung
+        entity: sensor.heizung_status
+        kind: sensor
+        warn_states: [heizen]
+        icon: mdi:radiator
+
+Design-Vorlage (setzt Hintergrund, Kreisstil, Animation und Form auf einmal; eigene Einstellungen haben Vorrang):
+  theme: neon_night      # neon_night | glass_aurora | minimal_light | hex_tech | cozy_sunset | ocean_calm | blueprint
+
+Hintergrund (Karte):
+  background: midnight   # default (Design von Home Assistant) | transparent | dark | black | light |
+                         # midnight | aurora | sunset | ocean | forest | grid | dots | color | gradient | image
+  background_color: "#1b2838"                  # bei background: color
+  background_gradient: "linear-gradient(160deg, #222, #446)"   # bei background: gradient (CSS)
+  background_image: /local/bild.jpg            # bei background: image
+  background_blur: 6     # Unschärfe des Bildes in px (0 bis 30)
+  background_dim: 0.35   # Abdunkeln des Bildes (0 bis 0.9)
+  background_text: auto  # auto | light | dark – Schriftfarbe auf dem Hintergrund
+  background_animation: none   # none | drift (wandernde Farbflächen) | stars (funkelnde Sterne)
+  Tag/Nacht-Automatik:
+    background_night: midnight        # Hintergrund bei Nacht (Vorlage; none = kein Wechsel)
+    background_night_entity: sun.sun  # Standard sun.sun (Nacht = unter dem Horizont); bei anderen Entitäten bedeutet "on" Nacht
+  Wetter-Hintergrund:
+    background_weather: weather.home  # Regen, Schnee, Wolken, Nebel, Blitze, Sonne (clear-night = Sterne)
+  Animationen pausieren im Ruhemodus und laufen nicht, wenn das Gerät "Animationen reduzieren" eingestellt hat.
+
+Kreise:
+  circle_style: default  # default | flat (ohne Verlauf/Schatten) | glass (halbtransparent) | neon (dünner Ring, starkes Leuchten)
+  node_shape: circle     # circle | square (abgerundetes Viereck) | hexagon (Sechseck); gilt auch für Ringe und Status-Kreise
+  node_size: 1           # Größe aller Kreise (0.6 bis 1.4)
+  home: {size: 1.2}      # Größe eines einzelnen Hauptkreises (grid, solar, battery, home, Geräte; 0.5 bis 1.6)
+  compact: off           # off | auto (bei Karten unter 440 px Breite) | on – kleinere Abstände und Schrift, ohne Datum/Zoom-Knöpfe
+  sparkline: true        # kleiner Verlauf der letzten Stunden hinter dem Messwert (große Kreise)
+  sparkline_hours: 6     # Zeitraum 1 bis 48 Stunden, braucht Recorder-Daten (Historie), Update alle 10 Minuten
+  grid: {sparkline: false}      # pro Kreis abschalten (oder true, um ihn bei kleinen Kreisen zu erzwingen)
+
+Linien:
+  line_style: solid      # solid | dashed | dotted | flow (animierte Striche) | neon (leuchtende Linien)
+  flow_marker: dot       # dot | arrow (Pfeil in Flussrichtung) | diamond (Raute)
+
+Zahlen:
+  number_animation: false   # true = Zahlen zählen sanft zum neuen Wert (bei gleicher Einheit)
+
+Neu in 1.0.4:
+
+Ansichten (Tabs, ab 2 Einträgen sichtbar):
+  default_view: Live     # Name oder Nummer der Startansicht
+  views:
+    - name: Live
+      icon: mdi:flash
+    - name: Solar
+      icon: mdi:solar-power
+      show: [solar]       # nur diese Teile zeigen: grid, solar, battery, devices, zones oder ein Zonen-Name (das Haus bleibt)
+      # hide: [battery]   # oder bestimmte Teile ausblenden
+      compact: "on"       # jede andere Karten-Option kann pro Ansicht überschrieben werden, null entfernt sie
+      positions: {solar: {x: 40, y: 20}}
+
+Layout-Assistent:
+  layout_assistant: true  # Knopf oben rechts; Kreise ziehen, Positionen bleiben pro Benutzer und Ansicht gespeichert
+  layout_id: wohnhaus     # optional, wenn mehrere Karten den gleichen Titel haben
+  positions:              # dauerhaft für alle (Assistent danach ausschalten); Verschiebung in Pixeln
+    solar: {x: -120, y: 40}
+
+Zeitreise:
+  time_travel: true       # Uhr-Knopf oben rechts, Regler zeigt die Werte eines früheren Zeitpunkts (braucht Recorder-Daten)
+  time_travel_hours: 24   # 1 bis 168
+
+Zonen und Kreise:
+  zone_frames: true       # Rahmen um jede Zone samt Geräten; pro Zone mit frame: false abschaltbar
+  zones:
+    - name: Wallbox
+      no_link: true       # keine Verbindungslinie, steht allein
+      line_label: true    # Wert an den Linien dieses Kreises
+
+Linien:
+  line_labels: true       # Wert-Labels an allen Linien, oder eine Liste von Linien-Namen
+  flow_dots: auto         # 1 | 2 | 3 | auto (mehr Punkte bei mehr Leistung)
+  flow_marker: particles  # dot | arrow | diamond | spark (Funken) | drop (Tropfen) | particles (Funken bei Solar/Batterie, sonst Tropfen)
+  line_gradient: true     # Farbverlauf von der Quelle zum Ziel
+  line_corners: round     # round | square
+
+Eigene Icons und Bilder:
+  custom_icons:
+    wallbox: /local/icons/wallbox.svg
+    pv: {url: /local/icons/pv.png, tint: true}   # tint: mit der Icon-Farbe einfärben (einfarbige Bilder)
+  solar: {icon: my:pv}    # oder direkt eine Bild-URL; Icon-Angaben mit Leerzeichen, Anführungszeichen oder < > werden ignoriert
+
+Infozeile:
+  info:
+    co2_entity: sensor.solar_ertrag_heute
+    co2_factor: 0.2       # kg pro kWh
+    co2_name: CO₂ gespart
+
+Sicherheit: Farben dürfen nur Namen, #hex, rgb()/hsl()/var() und Verläufe enthalten, andere Werte werden ignoriert.
 ```

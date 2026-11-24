@@ -3,10 +3,65 @@ const ST_ICONS = {
   window: ['mdi:window-closed', 'mdi:window-open'],
   door: ['mdi:door-closed', 'mdi:door-open'],
   lock: ['mdi:lock', 'mdi:lock-open-variant'],
+  smoke: ['mdi:smoke-detector-variant', 'mdi:smoke-detector-variant-alert'],
+  gas: ['mdi:gas-cylinder', 'mdi:alert-circle'],
+  co: ['mdi:molecule-co', 'mdi:alert-circle'],
+  water: ['mdi:water-check', 'mdi:water-alert'],
+  problem: ['mdi:check-circle-outline', 'mdi:alert-circle'],
+  motion: ['mdi:motion-sensor-off', 'mdi:motion-sensor'],
+  presence: ['mdi:account-off-outline', 'mdi:account-check'],
+  light: ['mdi:lightbulb-outline', 'mdi:lightbulb-on'],
+  switch: ['mdi:toggle-switch-off-outline', 'mdi:toggle-switch'],
+  temperature: ['mdi:thermometer', 'mdi:thermometer'],
+  humidity: ['mdi:water-percent', 'mdi:water-percent'],
+  sensor: ['mdi:gauge', 'mdi:gauge'],
+};
+// w = Woerter [normal, aktiv], alarm = aktiv ist sofort Alarm (rot, blinkend), act = aktiv ist nur "an" (gelb), num = Messwert
+const ST_META = {
+  smoke: { w: ['OK', 'Alarm'], alarm: true },
+  gas: { w: ['OK', 'Gas'], alarm: true },
+  co: { w: ['OK', 'CO-Alarm'], alarm: true },
+  water: { w: ['trocken', 'Wasser'], alarm: true },
+  problem: { w: ['OK', 'St\u00f6rung'], alarm: true },
+  motion: { w: ['ruhig', 'Bewegung'], act: true },
+  presence: { w: ['abwesend', 'anwesend'], act: true },
+  light: { w: ['aus', 'an'], act: true },
+  switch: { w: ['aus', 'an'], act: true },
+  temperature: { num: true, u: '\u00b0C', dec: 1 },
+  humidity: { num: true, u: '%', dec: 0 },
+  sensor: { num: true },
 };
 const PALETTE = ['#9c27b0', '#ff5722', '#03a9f4', '#cddc39', '#009688', '#795548'];
 const VW = 620;
 const VH = 410;
+
+// Hintergruende: bg = CSS-Hintergrund, fill = Fuellfarbe der Kreise, text = helle/dunkle Schrift, plain = ohne Rand/Schatten
+const VAW_BG = {
+  transparent: { bg: 'transparent', fill: 'var(--primary-background-color, #111)', plain: true },
+  dark: { bg: '#1c1f26', fill: '#1c1f26', text: 'light' },
+  black: { bg: '#000000', fill: '#000000', text: 'light' },
+  light: { bg: '#f4f6f8', fill: '#ffffff', text: 'dark' },
+  midnight: { bg: 'linear-gradient(160deg, #0f172a 0%, #1e293b 60%, #0b1220 100%)', fill: '#141d2f', text: 'light' },
+  aurora: { bg: 'radial-gradient(120% 90% at 8% 0%, rgba(0, 255, 170, 0.26), transparent 55%), radial-gradient(100% 80% at 100% 12%, rgba(130, 90, 255, 0.32), transparent 58%), linear-gradient(180deg, #0a1020, #0b1a24)', fill: '#0d1626', text: 'light' },
+  sunset: { bg: 'linear-gradient(160deg, #1f1147 0%, #5b2a6e 55%, #8a3b4f 100%)', fill: '#2a1636', text: 'light' },
+  ocean: { bg: 'linear-gradient(160deg, #04202e 0%, #0b4a5f 60%, #0f6b73 100%)', fill: '#07303f', text: 'light' },
+  forest: { bg: 'linear-gradient(160deg, #0d1f17 0%, #1d4a33 100%)', fill: '#11291e', text: 'light' },
+  grid: { bg: 'linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px) 0 0 / 24px 24px, linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px) 0 0 / 24px 24px, #0e1621', fill: '#0e1621', text: 'light' },
+  dots: { bg: 'radial-gradient(rgba(255, 255, 255, 0.10) 1.3px, transparent 1.6px) 0 0 / 20px 20px, #101820', fill: '#101820', text: 'light' },
+};
+const VAW_TEXT = { light: ['#f1f5f9', '#a9b4c4'], dark: ['#1f2933', '#52606d'] };
+function vawParseColor(str) {
+  const t = String(str || '').trim().toLowerCase();
+  let m = t.match(/^#([0-9a-f]{3})$/);
+  if (m) return m[1].split('').map((h) => parseInt(h + h, 16));
+  m = t.match(/^#([0-9a-f]{6})([0-9a-f]{2})?$/);
+  if (m) return [0, 2, 4].map((i) => parseInt(m[1].substr(i, 2), 16));
+  m = t.match(/^rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/);
+  if (m) return [Number(m[1]), Number(m[2]), Number(m[3])];
+  return null;
+}
+
+const vl0 = (x) => String(x).trim().toLowerCase();
 
 class FlowCardVAW extends HTMLElement {
   constructor() {
@@ -16,6 +71,89 @@ class FlowCardVAW extends HTMLElement {
 
   setConfig(config) {
     if (!config) throw new Error('Keine Konfiguration');
+    this._cfg0 = config;
+    this._la = false;
+    this._laTxt = false;
+    this._ttOn = false;
+    this._ttOver = null;
+    this._ttMin = 0;
+    if (this._realHass) this._hass = this._realHass;
+    const vs = this._viewList();
+    if (this._vi === undefined || this._vi >= vs.length) {
+      let i = 0;
+      const dv = config.default_view;
+      if (typeof dv === 'number') i = dv;
+      else if (typeof dv === 'string') {
+        const j = vs.findIndex((v) => v.name === dv);
+        if (j >= 0) i = j;
+      }
+      try {
+        const sv = localStorage.getItem('flow-card-vaw-view:' + vs.map((v) => v.name).join('|'));
+        if (sv !== null && Number(sv) < vs.length) i = Number(sv);
+      } catch (e) { /* ignorieren */ }
+      this._vi = Math.max(0, Math.min(Math.max(0, vs.length - 1), Math.floor(Number(i)) || 0));
+    }
+    this._applyCfg();
+  }
+
+  _posKey() {
+    const c0 = this._cfg0 || {};
+    const v = this._viewList()[this._vi || 0];
+    return String(c0.layout_id || c0.title || 'karte') + '|' + (v && v.name ? v.name : '');
+  }
+
+  _posStore() {
+    if (!this._posObj) {
+      try {
+        this._posObj = JSON.parse(localStorage.getItem('flow-card-vaw-pos') || '{}') || {};
+      } catch (e) {
+        this._posObj = {};
+      }
+    }
+    return this._posObj;
+  }
+
+  _posSave(clear) {
+    const st = this._posStore();
+    const key = this._posKey();
+    const P = this._pos || {};
+    const ks = Object.keys(P).filter((k) => P[k] && (P[k].x || P[k].y));
+    if (clear || !ks.length) delete st[key];
+    else {
+      const o = {};
+      ks.forEach((k) => { o[k] = { x: P[k].x || 0, y: P[k].y || 0 }; });
+      st[key] = o;
+    }
+    try { localStorage.setItem('flow-card-vaw-pos', JSON.stringify(st)); } catch (e) { /* ignorieren */ }
+    const h = this._realHass;
+    try {
+      if (h && typeof h.callWS === 'function') Promise.resolve(h.callWS({ type: 'frontend/set_user_data', key: 'flow_card_vaw_positions', value: st })).catch(() => {});
+    } catch (e) { /* ignorieren */ }
+  }
+
+  _posLoadWs() {
+    const h = this._realHass;
+    if (this._posWs || !h || typeof h.callWS !== 'function' || !this._c || this._c.layout_assistant !== true) return;
+    this._posWs = true;
+    Promise.resolve(h.callWS({ type: 'frontend/get_user_data', key: 'flow_card_vaw_positions' }))
+      .then((r) => {
+        const v = r && r.value;
+        if (v && typeof v === 'object' && !this._drag) {
+          this._posObj = Object.assign({}, this._posStore(), v);
+          try { localStorage.setItem('flow-card-vaw-pos', JSON.stringify(this._posObj)); } catch (e) { /* ignorieren */ }
+          this._applyCfg();
+        }
+      })
+      .catch(() => {});
+  }
+
+  _viewList() {
+    const v = this._cfg0 && this._cfg0.views;
+    return Array.isArray(v) ? v.filter((x) => x && typeof x === 'object').slice(0, 8) : [];
+  }
+
+  // Grundkonfiguration + Einstellungen der gew\u00e4hlten Ansicht (null entfernt einen Eintrag), dann Design-Vorlage
+  _applyCfg() {
     // leere Werte (z. B. "icon: null" aus dem Editor) wie nicht vorhanden behandeln, damit die Standardwerte gelten
     const strip = (o) => {
       if (Array.isArray(o)) return o.map(strip);
@@ -28,7 +166,48 @@ class FlowCardVAW extends HTMLElement {
       }
       return o;
     };
-    this._c = strip(config);
+    const vs = this._viewList();
+    this._views = vs;
+    const base = Object.assign({}, this._cfg0);
+    delete base.views;
+    delete base.default_view;
+    const v = vs[this._vi] || null;
+    if (vs.length && v) {
+      Object.keys(v).forEach((k) => {
+        if (k === 'name' || k === 'icon' || k === 'show' || k === 'hide') return;
+        if (v[k] === null) delete base[k];
+        else base[k] = v[k];
+      });
+      // show: nur diese Teile zeigen (grid, solar, battery, devices, zones oder Zonen-Namen); hide: diese ausblenden. Das Haus bleibt als Mitte immer sichtbar.
+      const lst = (x) => (Array.isArray(x) ? x : typeof x === 'string' && x ? [x] : []).map((t) => String(t).trim().toLowerCase());
+      const sh = lst(v.show);
+      const hi = lst(v.hide);
+      if (sh.length || hi.length) {
+        const vis = (key, nm) => {
+          const n = nm ? String(nm).trim().toLowerCase() : null;
+          if (hi.includes(key) || (n && hi.includes(n))) return false;
+          if (!sh.length) return true;
+          return sh.includes(key) || !!(n && sh.includes(n));
+        };
+        ['grid', 'solar', 'battery', 'devices'].forEach((k) => { if (!vis(k)) delete base[k]; });
+        if (Array.isArray(base.zones)) {
+          const zs = base.zones.filter((z) => z && vis('zones', z.name));
+          if (zs.length) base.zones = zs;
+          else delete base.zones;
+        }
+      }
+    }
+    const c0 = vawClean(strip(base));
+    const T = VAW_THEMES[c0.theme];
+    this._c = T ? Object.assign({}, T, c0) : c0;
+    const p = this._c.positions;
+    this._pos = {};
+    if (p && typeof p === 'object') Object.keys(p).forEach((k) => { if (p[k] && typeof p[k] === 'object') this._pos[k] = { x: Number(p[k].x) || 0, y: Number(p[k].y) || 0 }; });
+    // im Layout-Assistenten verschobene Positionen (pro Benutzer in Home Assistant und im Browser gespeichert) haben Vorrang
+    if (this._c.layout_assistant === true) {
+      const sv = this._posStore()[this._posKey()];
+      if (sv && typeof sv === 'object') Object.keys(sv).forEach((k) => { if (sv[k] && typeof sv[k] === 'object') this._pos[k] = { x: Number(sv[k].x) || 0, y: Number(sv[k].y) || 0 }; });
+    }
     this._render();
   }
 
@@ -64,6 +243,7 @@ class FlowCardVAW extends HTMLElement {
     document.addEventListener('fullscreenchange', this._onFsChange);
     document.addEventListener('webkitfullscreenchange', this._onFsChange);
     window.addEventListener('keydown', this._onKey);
+    if (this.shadowRoot && this.shadowRoot.querySelector('ha-card')) this._applyLook();
     // Ruhemodus mit Zeitfenster: einmal pro Minute pr\u00fcfen
     this._tickN = 0;
     this._tick = setInterval(() => {
@@ -75,6 +255,10 @@ class FlowCardVAW extends HTMLElement {
 
   disconnectedCallback() {
     clearInterval(this._tick);
+    if (this._ro) {
+      this._ro.disconnect();
+      this._ro = null;
+    }
     document.removeEventListener('fullscreenchange', this._onFsChange);
     document.removeEventListener('webkitfullscreenchange', this._onFsChange);
     window.removeEventListener('keydown', this._onKey);
@@ -136,16 +320,335 @@ class FlowCardVAW extends HTMLElement {
   }
 
   set hass(hass) {
-    this._hass = hass;
+    this._realHass = hass;
+    this._hass = this._ttOn && this._ttOver ? this._ttMake(hass) : hass;
     this._update();
+    try { this._posLoadWs(); } catch (e) { /* ignorieren */ }
+  }
+
+  // ---- Zeitreise: Zust\u00e4nde aller verwendeten Entit\u00e4ten zu einem fr\u00fcheren Zeitpunkt aus dem Verlauf holen ----
+  _ttHours() {
+    const h = Number(this._c && this._c.time_travel_hours);
+    return h > 0 ? Math.min(168, Math.max(1, h)) : 24;
+  }
+
+  _ttEnts() {
+    const h = this._realHass;
+    const set = {};
+    const walk = (o) => {
+      if (typeof o === 'string') {
+        if (/^[a-z0-9_]+\.[a-z0-9_]+$/.test(o) && !/^(sun|weather)\./.test(o) && h && h.states[o]) set[o] = 1;
+      } else if (Array.isArray(o)) o.forEach(walk);
+      else if (o && typeof o === 'object') Object.keys(o).forEach((k) => walk(o[k]));
+    };
+    walk(this._c);
+    return Object.keys(set);
+  }
+
+  _ttMake(h) {
+    const st = Object.assign({}, h.states);
+    Object.keys(this._ttOver).forEach((id) => {
+      const o = h.states[id];
+      if (o) st[id] = Object.assign({}, o, { state: this._ttOver[id] });
+    });
+    return Object.assign({}, h, { states: st });
+  }
+
+  _ttApply() {
+    const h = this._realHass;
+    if (!h) return;
+    this._hass = this._ttOver ? this._ttMake(h) : h;
+    this._update();
+  }
+
+  _ttLabel(back) {
+    if (back <= 0) return 'Jetzt';
+    const lang = (this._realHass && this._realHass.locale && this._realHass.locale.language) || undefined;
+    const d = new Date(Date.now() - back * 60000);
+    return d.toLocaleString(lang, { weekday: 'short', hour: '2-digit', minute: '2-digit' }) + ' \u00b7 vor ' + this._fmtDur(back / 60);
+  }
+
+  _ttGo(back) {
+    this._ttMin = back;
+    clearTimeout(this._ttTm);
+    const h = this._realHass;
+    if (!h) return;
+    if (back <= 0) {
+      this._ttSeq = (this._ttSeq || 0) + 1;
+      this._ttOver = null;
+      this._ttApply();
+      return;
+    }
+    this._ttTm = setTimeout(() => {
+      const t = Date.now() - back * 60000;
+      const ids = this._ttEnts();
+      const seq = (this._ttSeq = (this._ttSeq || 0) + 1);
+      if (!ids.length || typeof h.callWS !== 'function') return;
+      h.callWS({ type: 'history/history_during_period', start_time: new Date(t).toISOString(), end_time: new Date(t + 60000).toISOString(), entity_ids: ids, include_start_time_state: true, significant_changes_only: false, minimal_response: true, no_attributes: true })
+        .then((res) => {
+          if (seq !== this._ttSeq || !this._ttOn) return;
+          const over = {};
+          ids.forEach((id) => {
+            const it = res && res[id] && res[id][0];
+            const v = it ? (it.s !== undefined ? it.s : it.state) : undefined;
+            over[id] = v === undefined || v === null ? 'unavailable' : v;
+          });
+          this._ttOver = over;
+          this._ttApply();
+        })
+        .catch(() => {});
+    }, 300);
+  }
+
+  // eigene Icons und Bilder: "my:name" (aus custom_icons), Bild-URL oder "img:URL" statt mdi-Icon (URL mit #tint am Ende = mit Icon-Farbe einf\u00e4rben)
+  _iconFix(root) {
+    const m = this._c && this._c.custom_icons && typeof this._c.custom_icons === 'object' ? this._c.custom_icons : {};
+    root.querySelectorAll('ha-icon[icon]').forEach((el) => {
+      const ic = el.getAttribute('icon') || '';
+      let url = null;
+      let tint = false;
+      if (ic.indexOf('my:') === 0) {
+        const v = m[ic.slice(3)];
+        if (v) {
+          if (typeof v === 'string') url = v;
+          else {
+            url = v.url;
+            tint = !!v.tint;
+          }
+        }
+      } else if (/^(https?:\/\/|\/|data:image|img:)/i.test(ic) || /\.(png|jpe?g|svg|webp|gif)([?#].*)?$/i.test(ic)) url = ic.replace(/^img:/, '');
+      if (!url) return;
+      url = String(url);
+      if (/#tint$/.test(url)) {
+        tint = true;
+        url = url.replace(/#tint$/, '');
+      }
+      const n = document.createElement(tint ? 'span' : 'img');
+      n.className = 'ci' + (tint ? ' tint' : '') + (el.parentElement && el.parentElement.classList.contains('zi') ? '' : ' inl');
+      if (el.id) n.id = el.id;
+      n.setAttribute('icon', ic);
+      n.style.cssText = el.style.cssText;
+      if (tint) n.style.webkitMaskImage = n.style.maskImage = 'url("' + url.replace(/"/g, '%22') + '")';
+      else {
+        n.src = url;
+        n.alt = '';
+      }
+      el.replaceWith(n);
+    });
+  }
+
+  // Tag/Nacht: Nacht, wenn sun.sun unter dem Horizont steht (oder die gew\u00e4hlte Entit\u00e4t "on" ist)
+  _isNight() {
+    const c = this._c || {};
+    if (!c.background_night || c.background_night === 'none') return false;
+    const e = String(c.background_night_entity || 'sun.sun');
+    const st = this._hass && this._hass.states[e];
+    if (!st) return false;
+    return e.indexOf('sun.') === 0 ? st.state === 'below_horizon' : st.state === 'on';
+  }
+
+  // Wetter-Zustand der gew\u00e4hlten weather-Entit\u00e4t (leer = kein Wetter-Hintergrund)
+  _wxKey() {
+    const e = this._c && this._c.background_weather;
+    if (!e) return '';
+    const st = this._hass && this._hass.states[String(e)];
+    return st ? String(st.state) : '';
+  }
+
+  // Hintergrund: Vorlage (background, nachts background_night) oder eigene Farbe / Verlauf / Bild, dazu Animation
+  _applyBg() {
+    const card = this.shadowRoot && this.shadowRoot.querySelector('ha-card');
+    const c = this._c || {};
+    if (!card) return;
+    card.querySelectorAll(':scope > .bgl, :scope > .bga, :scope > .bgw').forEach((n) => n.remove());
+    ['background', 'box-shadow', 'border', '--card-background-color', '--primary-text-color', '--secondary-text-color'].forEach((p) => card.style.removeProperty(p));
+    card.classList.remove('bgd');
+    const night = this._isNight();
+    this._bgNight = night;
+    const kind = night ? String(c.background_night) : String(c.background || 'default');
+    const num = (v, d, lo, hi) => (v !== undefined && v !== null && v !== '' && !isNaN(Number(v)) ? Math.max(lo, Math.min(hi, Number(v))) : d);
+    let bg = null;
+    let fill = null;
+    let text = null;
+    let plain = false;
+    const P = VAW_BG[kind];
+    if (P) {
+      bg = P.bg;
+      fill = P.fill;
+      text = P.text || null;
+      plain = !!P.plain;
+    } else if (kind === 'color' && c.background_color) {
+      bg = String(c.background_color);
+      const rgb = vawParseColor(bg);
+      if (rgb) {
+        text = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255 > 0.55 ? 'dark' : 'light';
+        fill = bg;
+      }
+    } else if (kind === 'gradient' && c.background_gradient) {
+      bg = String(c.background_gradient);
+      text = 'light';
+      fill = '#111827';
+    } else if (kind === 'image' && c.background_image) {
+      bg = '#111827';
+      text = 'light';
+      fill = '#111827';
+    }
+    if (bg && (c.background_text === 'light' || c.background_text === 'dark') && !night) {
+      text = c.background_text;
+      if (kind === 'gradient' || kind === 'image') fill = text === 'dark' ? '#f3f4f6' : '#111827';
+    }
+    let lastLayer = null;
+    if (bg) {
+      card.classList.add('bgd');
+      card.style.setProperty('background', bg);
+      if (plain) {
+        card.style.setProperty('box-shadow', 'none');
+        card.style.setProperty('border', 'none');
+      }
+      if (fill) card.style.setProperty('--card-background-color', fill);
+      if (text && VAW_TEXT[text]) {
+        card.style.setProperty('--primary-text-color', VAW_TEXT[text][0]);
+        card.style.setProperty('--secondary-text-color', VAW_TEXT[text][1]);
+      }
+      if (kind === 'image' && c.background_image) {
+        const blur = num(c.background_blur, 0, 0, 30);
+        const dim = num(c.background_dim, 0.35, 0, 0.9);
+        const lay = document.createElement('div');
+        lay.className = 'bgl' + (blur ? ' blur' : '');
+        const img = document.createElement('i');
+        img.style.backgroundImage = 'url("' + String(c.background_image).replace(/["\\\r\n]/g, '') + '")';
+        if (blur) img.style.filter = 'blur(' + blur + 'px)';
+        const shade = document.createElement('b');
+        shade.style.background = 'rgba(0, 0, 0, ' + dim + ')';
+        lay.appendChild(img);
+        lay.appendChild(shade);
+        card.insertBefore(lay, card.firstChild);
+        lastLayer = lay;
+      }
+    }
+    // Animation: wandernde Farbfl\u00e4chen oder funkelnde Sterne (im Ruhemodus angehalten)
+    const wk = this._wxKey();
+    this._wxShown = wk;
+    let an = String(c.background_animation || 'none');
+    if (wk === 'clear-night' && an === 'none') an = 'stars';
+    if (an === 'drift' || an === 'stars') {
+      card.classList.add('bgd');
+      const L = document.createElement('div');
+      L.className = 'bga ' + an + (text === 'dark' ? ' dk' : '');
+      if (an === 'stars') {
+        let seed = 7;
+        const rnd = () => {
+          seed = (seed * 16807) % 2147483647;
+          return seed / 2147483647;
+        };
+        for (let k = 0; k < 48; k++) {
+          const d = document.createElement('i');
+          const z = (1 + rnd() * 1.8).toFixed(1);
+          d.style.cssText = 'left:' + (rnd() * 100).toFixed(1) + '%;top:' + (rnd() * 100).toFixed(1) + '%;width:' + z + 'px;height:' + z + 'px;animation-delay:' + (rnd() * 6).toFixed(1) + 's;animation-duration:' + (2.5 + rnd() * 4).toFixed(1) + 's';
+          L.appendChild(d);
+        }
+      }
+      card.insertBefore(L, lastLayer ? lastLayer.nextSibling : card.firstChild);
+    }
+    // Wetter-Effekt: Regen, Schnee, Wolken, Nebel, Blitz, Sonne
+    const KINDS = { rainy: ['rain'], pouring: ['rain', 'heavy'], hail: ['rain', 'hail'], lightning: ['cloud', 'flash', 'bolt'], 'lightning-rainy': ['rain', 'heavy', 'flash', 'bolt'], snowy: ['snow'], 'snowy-rainy': ['rain', 'snow'], fog: ['fog'], cloudy: ['cloud', 'cloud2'], partlycloudy: ['cloud', 'sun'], windy: ['cloud', 'fast', 'wind'], 'windy-variant': ['cloud', 'fast', 'wind'], sunny: ['sun', 'rays'], exceptional: ['fog'] };
+    const kd0 = KINDS[wk];
+    const prevWx = this._wxPrevState;
+    if (wk !== prevWx) {
+      if (/rainy|pouring/.test(prevWx || '') && /^(sunny|partlycloudy|cloudy)$/.test(wk)) this._rbUntil = Date.now() + 20 * 60000;
+      this._wxPrevState = wk;
+    }
+    const rbOn = !!(this._rbUntil && Date.now() < this._rbUntil && (wk === 'sunny' || wk === 'partlycloudy'));
+    this._rbOn = rbOn;
+    const kd = kd0 ? (rbOn ? kd0.concat(['rainbow']) : kd0) : kd0;
+    if (kd) {
+      card.classList.add('bgd');
+      const W = document.createElement('div');
+      W.className = 'bgw ' + kd.join(' ') + (text === 'dark' ? ' dk' : '');
+      const rnd = vawRnd(11);
+      const add = (tag, cls, css) => {
+        const e = document.createElement(tag);
+        if (cls) e.className = cls;
+        e.style.cssText = css;
+        W.appendChild(e);
+      };
+      const has = (k) => kd.indexOf(k) >= 0;
+      if (has('rain')) {
+        const cnt = has('heavy') ? 90 : 55;
+        for (let k = 0; k < cnt; k++) add('i', 'r', 'left:' + (rnd() * 100).toFixed(1) + '%;height:' + (10 + rnd() * 14).toFixed(0) + 'px;opacity:' + (0.35 + rnd() * 0.45).toFixed(2) + ';animation-duration:' + ((has('heavy') ? 0.45 : 0.75) + rnd() * 0.4).toFixed(2) + 's;animation-delay:-' + (rnd() * 2).toFixed(2) + 's');
+      }
+      if (has('snow')) {
+        for (let k = 0; k < 45; k++) {
+          const z = (2 + rnd() * 2.6).toFixed(1);
+          add('i', 's', 'left:' + (rnd() * 100).toFixed(1) + '%;width:' + z + 'px;height:' + z + 'px;--dx:' + ((rnd() - 0.5) * 50).toFixed(0) + 'px;animation-duration:' + (7 + rnd() * 7).toFixed(1) + 's;animation-delay:-' + (rnd() * 12).toFixed(1) + 's');
+        }
+      }
+      if (has('cloud')) {
+        const cnt = has('cloud2') ? 6 : 3;
+        for (let k = 0; k < cnt; k++) {
+          const d = has('fast') ? 22 + rnd() * 14 : 70 + rnd() * 50;
+          add('i', 'c', '--t:' + (rnd() * 50 - 10).toFixed(0) + '%;--w:' + (45 + rnd() * 35).toFixed(0) + '%;animation-duration:' + d.toFixed(0) + 's;animation-delay:-' + (rnd() * d).toFixed(0) + 's');
+        }
+      }
+      if (has('fog')) {
+        add('i', 'f', 'top:8%');
+        add('i', 'f', 'top:48%;animation-delay:-14s');
+      }
+      if (has('sun')) add('i', 'sn', '');
+      if (has('rays')) add('i', 'sr', '');
+      if (has('rainbow')) add('i', 'rb', '');
+      if (has('wind')) {
+        for (let k = 0; k < 16; k++) add('i', 'wd', '--t:' + (rnd() * 96).toFixed(0) + '%;--w:' + (40 + rnd() * 90).toFixed(0) + 'px;--d:' + (1.1 + rnd() * 1.6).toFixed(2) + 's;animation-delay:-' + (rnd() * 3).toFixed(2) + 's;opacity:' + (0.5 + rnd() * 0.5).toFixed(2));
+      }
+      if (has('bolt')) add('b', 'bolt', '--l:' + (12 + rnd() * 70).toFixed(0) + '%');
+      if (has('flash')) add('b', 'fl', '');
+      card.insertBefore(W, lastLayer ? lastLayer.nextSibling : card.firstChild);
+    }
+  }
+
+  // Kreisstil (flach, Glas, Neon) und kompakter Modus (aus / automatisch bei schmaler Karte / immer)
+  _applyLook() {
+    const card = this.shadowRoot && this.shadowRoot.querySelector('ha-card');
+    const c = this._c || {};
+    if (!card) return;
+    const cs = String(c.circle_style || 'default');
+    ['flat', 'glass', 'neon'].forEach((k) => card.classList.toggle('cs-' + k, cs === k));
+    card.classList.toggle('lc-square', c.line_corners === 'square');
+    const ls = String(c.line_style || 'solid');
+    ['dashed', 'dotted', 'flow', 'neon'].forEach((k) => card.classList.toggle('ls-' + k, ls === k));
+    if (this._ro) {
+      this._ro.disconnect();
+      this._ro = null;
+    }
+    const mode = c.compact === true ? 'on' : c.compact === undefined || c.compact === false ? 'off' : String(c.compact);
+    if (mode === 'on' || mode === 'auto') {
+      const apply = () => {
+        const w = card.getBoundingClientRect().width;
+        card.classList.toggle('compact', !card.classList.contains('fs') && (mode === 'on' || (w > 0 && w < 440)));
+      };
+      apply();
+      if (typeof ResizeObserver !== 'undefined') {
+        this._ro = new ResizeObserver(apply);
+        this._ro.observe(card);
+      }
+    }
   }
 
   _render() {
     const c = this._c;
     // Optik-Optionen (alle einzeln abschaltbar)
     const optOn = (k) => c[k] !== false;
+    const SH = ['square', 'hexagon'].includes(c.node_shape) ? c.node_shape : 'circle';
+    const SZ = c.node_size !== undefined && c.node_size !== '' && !isNaN(Number(c.node_size)) ? Math.max(0.6, Math.min(1.4, Number(c.node_size))) : 1;
+    const SPARK = c.sparkline === true;
     const OPT = {
       lineW: optOn('line_width'),
+      numAnim: c.number_animation === true,
+      ndot: c.flow_dots === 'auto' ? 3 : Math.max(1, Math.min(3, Number(c.flow_dots) || 1)),
+      dotsAuto: c.flow_dots === 'auto',
+      lgrad: c.line_gradient === true,
+      fill: c.fill_level === true,
+      mk: ['arrow', 'diamond', 'spark', 'drop', 'particles'].includes(c.flow_marker) ? c.flow_marker : 'dot',
       lineMax: Math.max(3, Number(c.line_width_max) || 6),
       glow: optOn('glow'),
       pulse: optOn('pulse'),
@@ -175,7 +678,7 @@ class FlowCardVAW extends HTMLElement {
       const rr = r >= 40 ? 12.5 : r >= 30 ? 11 : 9;
       this._sw.push({ key, entity: o.switch, confirm: o.switch_confirm === true, name: o.name });
       const k = (rr / 11).toFixed(2);
-      swSvg += `<g class="sw un" id="sw_${key}" data-sw="${key}" transform="translate(${(x + r * 0.74).toFixed(1)} ${(y - r * 0.68).toFixed(1)})" style="--sc:${col}"><title>${String(o.name || 'Schalter').replace(/</g, '&lt;')} schalten</title><circle r="${rr + 5}" fill="transparent"/><circle class="swb" r="${rr}"/><path class="swi" transform="scale(${k})" d="M-3.6,-3.8 A5.2,5.2 0 1 0 3.6,-3.8 M0,-6.2 V-0.8"/></g>`;
+      swSvg += `<g class="sw un" id="sw_${key}" data-sw="${key}" transform="translate(${(x + r * 0.74).toFixed(1)} ${(y - r * 0.68).toFixed(1)})" style="--sc:${vawEsc(col)}"><title>${vawEsc(o.name || 'Schalter')} schalten</title><circle r="${rr + 5}" fill="transparent"/><circle class="swb" r="${rr}"/><path class="swi" transform="scale(${k})" d="M-3.6,-3.8 A5.2,5.2 0 1 0 3.6,-3.8 M0,-6.2 V-0.8"/></g>`;
     };
     // Farbverl\u00e4ufe f\u00fcr die Kreise (eine Definition pro Farbe)
     const gradDefs = new Map();
@@ -197,7 +700,7 @@ class FlowCardVAW extends HTMLElement {
     if (bc.soc && !bc.soc_in_circle) batKidsCfg.push({ soc: bc.soc });
     (Array.isArray(bc.children) ? bc.children : []).forEach((x) => batKidsCfg.push(typeof x === 'string' ? { soc: x } : { ...x }));
     batKidsCfg.splice(10);
-    // Status (Garagentor, Fenster, T\u00fcren): status [{name, entity|entities, show, at, kind, warn_after, ...}]
+    // Status (Tore, Fenster, Rauchmelder, Sensoren ...): status [{name, entity|entities, show, at, kind, warn_after, ...}]
     const stCfg = (Array.isArray(c.status) ? c.status : [])
       .slice(0, 12)
       .map((e) => {
@@ -414,6 +917,19 @@ class FlowCardVAW extends HTMLElement {
       }
       VH = Math.max(bottom, 400) + yoff;
     }
+    {
+      const seen = new Set();
+      const szOf = (n) => {
+        const k = n.cfg && n.cfg.size !== undefined && !isNaN(Number(n.cfg.size)) ? Math.max(0.5, Math.min(1.6, Number(n.cfg.size))) : 1;
+        return SZ * k;
+      };
+      nodes.concat(this._home ? [this._home] : []).forEach((n) => {
+        if (seen.has(n)) return;
+        seen.add(n);
+        n.r = Math.round(n.r * szOf(n));
+        if (n.kidR) n.kidR = Math.round(n.kidR * SZ);
+      });
+    }
     nodes.forEach((n) => { n.four = n.key === 'grid' || (n.key === 'battery' && bFour); });
     this._nodes = nodes;
 
@@ -442,6 +958,32 @@ class FlowCardVAW extends HTMLElement {
       }
     }
 
+    // Positionen aus dem Layout-Assistenten (positions: Name: {x, y} = Verschiebung)
+    {
+      const P = this._pos || {};
+      nodes.forEach((n) => {
+        const q = P[n.key];
+        if (q) {
+          n.x += Number(q.x) || 0;
+          n.y += Number(q.y) || 0;
+          n._mv = true;
+        }
+      });
+      // verschobene Kreise nie abschneiden: Zeichenfl\u00e4che erweitern und ggf. alles nach rechts/unten schieben
+      const mvd = nodes.filter((n) => n._mv);
+      if (mvd.length) {
+        const rr = (n) => (n.r || 40);
+        let x0 = Math.min(...mvd.map((n) => n.x - rr(n) - 70));
+        let y0 = Math.min(...mvd.map((n) => n.y - rr(n) - 18));
+        const x1 = Math.max(...mvd.map((n) => n.x + rr(n) + 70));
+        const y1 = Math.max(...mvd.map((n) => n.y + rr(n) + 36));
+        const dx = x0 < 0 ? -x0 : 0;
+        const dy = y0 < 0 ? -y0 : 0;
+        if (dx || dy) nodes.forEach((n) => { n.x += dx; n.y += dy; });
+        VW = Math.max(VW + dx, x1 + dx);
+        VH = Math.max(VH + dy, y1 + dy);
+      }
+    }
     // ---- Verbindungen ----
     const by = {};
     nodes.forEach((n) => { by[n.key] = n; });
@@ -449,6 +991,7 @@ class FlowCardVAW extends HTMLElement {
     const R = 36; // Kurvenradius der Linien
     const lc = (n) => n.cfg.line_color || n.cfg.color;
     const straight = (a, bb) => `M${a.x},${a.y} L${bb.x},${bb.y}`;
+    const vv = (a, bb) => (Math.abs(a.x - bb.x) < 1 ? `M${a.x},${a.y} V${bb.y}` : `M${a.x},${a.y} L${bb.x},${bb.y}`);
     // senkrecht los, dann abgerundet in die Waagrechte
     const vh = (x1, y1, x2, y2) => {
       const sy = Math.sign(y2 - y1);
@@ -510,7 +1053,7 @@ class FlowCardVAW extends HTMLElement {
     };
     const fanLinks = () => {
       const groupsBy = new Map();
-      nodes.filter((n) => n.dev).forEach((n) => {
+      nodes.filter((n) => n.dev && !(n.cfg && (n.cfg.no_link === true || n.cfg.connected === false))).forEach((n) => {
         const par = n.parent || this._home;
         if (!groupsBy.has(par)) groupsBy.set(par, []);
         groupsBy.get(par).push(n);
@@ -530,12 +1073,12 @@ class FlowCardVAW extends HTMLElement {
       L('grid_home', 'grid', 'home', straight);
       L('solar_home', 'solar', 'home', (a, bb) => vh(a.x + 14, a.y, bb.x, bb.y - 14));
       L('solar_grid', 'solar', 'grid', (a, bb) => vh(a.x - 14, a.y, bb.x, bb.y - 14));
-      L('solar_battery', 'solar', 'battery', (a, bb) => `M${a.x},${a.y} V${bb.y}`);
+      L('solar_battery', 'solar', 'battery', vv);
       L('battery_home', 'battery', 'home', (a, bb) => vh(a.x + 14, a.y, bb.x, bb.y + 14));
       L('battery_grid', 'battery', 'grid', (a, bb) => vh(a.x - 14, a.y, bb.x, bb.y + 14));
       fanLinks();
     } else {
-      L('grid_home', 'grid', 'home', (a, bb) => `M${a.x},${a.y} V${bb.y}`);
+      L('grid_home', 'grid', 'home', vv);
       L('solar_home', 'solar', 'home', (a, bb) => vh(a.x - 14, a.y, bb.x, bb.y - 14));
       L('battery_home', 'battery', 'home', (a, bb) => vh(a.x + 14, a.y, bb.x, bb.y - 14));
       L('solar_grid', 'solar', 'grid', straight);
@@ -553,7 +1096,7 @@ class FlowCardVAW extends HTMLElement {
     const makeKids = (parent, list, prefix, mode, main, opt = {}) => {
       if (!parent || !list.length) return;
       const k = list.length;
-      const r = opt.r || parent.kidR || (main === 'm' ? 33 : k <= 6 ? 26 : 20);
+      const r = Math.round((opt.r || parent.kidR || (main === 'm' ? 33 : k <= 6 ? 26 : 20)) * (parent.kidR ? 1 : SZ));
       const kd = opt.dist !== undefined ? opt.dist : parent.kidDist; // Abstand zum Elternkreis
       const gap = 2 * r + 6;
       const tiny = r < 22;
@@ -571,6 +1114,13 @@ class FlowCardVAW extends HTMLElement {
         const cx = left ? parent.x - parent.r - (kd || 22) - r : x0 + i * gap;
         const cy = left ? parent.y + (i - (k - 1) / 2) * gap : cy0;
         if (main === 'm') this._peakKid = { cx, cy, r };
+        {
+          const kb = parent._kb || (parent._kb = { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 });
+          kb.x0 = Math.min(kb.x0, cx - r - 4);
+          kb.x1 = Math.max(kb.x1, cx + r + 4);
+          kb.y0 = Math.min(kb.y0, cy - r - 14);
+          kb.y1 = Math.max(kb.y1, cy + r + 16);
+        }
         const col = o.color || parent.cfg.color;
         let dpath;
         if (left) {
@@ -607,7 +1157,7 @@ class FlowCardVAW extends HTMLElement {
         if (o.temperature) kk.push('t');
         if (o.switch && /^(z\d+)?d\d+c\d+$/.test(id)) swBtn(id, o, cx, cy, r, col);
         const socRing = main === 's' && batRingOn;
-        const KC = 2 * Math.PI * r;
+        const KC = vawRingLen(SH, r, 0);
         this._kids.push({ o, id, col, socRing, KC });
         const KN = kk.length;
         const lineH = KN >= 4 ? (tiny ? 8 : 9.5) : tiny ? 9 : 10;
@@ -621,11 +1171,11 @@ class FlowCardVAW extends HTMLElement {
           .join('\n            ');
         kidSvg += `
           <g class="kid" id="kg_${id}">
-            <circle id="kc_${id}" cx="${cx}" cy="${cy}" r="${r}" fill="var(--card-background-color, #fff)" stroke="${col}" stroke-width="3"${socRing ? ' stroke-opacity="0.3"' : ''}/>
-            ${OPT.grad && main !== 'm' ? `<circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#${gradId(col)})" pointer-events="none"/>` : ''}
-            ${socRing ? `<circle id="kr_${id}" cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${col}" stroke-width="3" stroke-linecap="round" stroke-dasharray="0 ${KC.toFixed(1)}" transform="rotate(-90 ${cx} ${cy})" opacity="0"/>` : ''}
+            ${vawShapeEl(SH, cx, cy, r, `id="kc_${id}" fill="var(--card-background-color, #fff)" stroke="${vawEsc(col)}" stroke-width="3"${socRing ? ' stroke-opacity="0.3"' : ''}`)}
+            ${OPT.grad && main !== 'm' ? vawShapeEl(SH, cx, cy, r, `fill="url(#${gradId(col)})" pointer-events="none"`) : ''}
+            ${socRing ? vawRingEl(SH, cx, cy, r, 0, `id="kr_${id}" fill="none" stroke="${col}" stroke-width="3" stroke-linecap="round" stroke-dasharray="0 ${KC.toFixed(1)}" opacity="0"`) : ''}
             ${ktxt}
-            ${o.name ? (left ? `<text x="${cx - r - 5}" y="${cy + 3}" class="n" style="font-size:9px;text-anchor:end">${o.name}</text>` : `<text x="${cx}" y="${below ? cy + r + 12 : cy - r - 5}" class="n" style="font-size:9px">${o.name}</text>`) : ''}
+            ${o.name ? (left ? `<text x="${cx - r - 5}" y="${cy + 3}" class="n" style="font-size:9px;text-anchor:end">${vawEsc(o.name)}</text>` : `<text x="${cx}" y="${below ? cy + r + 12 : cy - r - 5}" class="n" style="font-size:9px">${vawEsc(o.name)}</text>`) : ''}
           </g>`;
       });
     };
@@ -694,20 +1244,77 @@ class FlowCardVAW extends HTMLElement {
         const cx = VW / 2 + (k - row * perRow - (inRow - 1) / 2) * (2 * R2 + GX);
         const cy = y0 + R2 + 4 + row * 82;
         const id = q.i + '_' + q.j;
-        stSvg += `<g class="stc" id="stc_${id}" data-st="${q.i}:${q.j}"><circle cx="${cx}" cy="${cy}" r="${R2}" fill="var(--card-background-color, #fff)"/><circle id="stk_${id}" cx="${cx}" cy="${cy}" r="${R2}" fill="none" stroke="#888" stroke-width="3"/><text id="stt_${id}" x="${cx}" y="${cy + 16}" class="s" style="font-size:9px">\u2013</text><text id="stn_${id}" x="${cx}" y="${cy + R2 + 14}" class="n" style="font-size:10px"></text></g>`;
+        stSvg += `<g class="stc" id="stc_${id}" data-st="${q.i}:${q.j}">${vawShapeEl(SH, cx, cy, R2, 'fill="var(--card-background-color, #fff)"')}${vawShapeEl(SH, cx, cy, R2, `id="stk_${id}" fill="none" stroke="#888" stroke-width="3"`)}<text id="stt_${id}" x="${cx}" y="${cy + 16}" class="s" style="font-size:9px">\u2013</text><text id="stn_${id}" x="${cx}" y="${cy + R2 + 14}" class="n" style="font-size:10px"></text></g>`;
         const se = this._stSwEnt(stCfg[q.i], q.j);
         if (se) swBtn('st_' + id, { switch: se, switch_confirm: stCfg[q.i].switch_confirm, name: stCfg[q.i].ents.length === 1 && stCfg[q.i].name ? stCfg[q.i].name : stCfg[q.i].ents[q.j].name || stCfg[q.i].name }, cx, cy, R2, stCfg[q.i].open_color || '#fb8c00');
         stIcons += `<ha-icon id="sti_${id}" icon="mdi:door-closed" style="left:${(cx / VW) * 100}%;top:${((cy - 5) / VH) * 100}%;color:#888;--mdc-icon-size:${((18 / VW) * 100).toFixed(3)}cqw"></ha-icon>`;
       });
     }
+    if (c.line_corners === 'square') links.forEach((l) => { l.d = l.d.replace(/Q(-?[\d.]+),(-?[\d.]+) (-?[\d.]+),(-?[\d.]+)/g, 'L$1,$2 L$3,$4'); });
+    // Rahmen um Zonen samt Ger\u00e4ten (zone_frames: true oder pro Zone frame: true/false)
+    let frameSvg = '';
+    nodes.filter((n) => /^z\d+$/.test(n.key)).forEach((zn) => {
+      const on = zn.cfg && (zn.cfg.frame === true || (c.zone_frames === true && zn.cfg.frame !== false));
+      if (!on) return;
+      const grp = [zn].concat(nodes.filter((n) => n.key.indexOf(zn.key + 'd') === 0 && /^z\d+d\d+$/.test(n.key)));
+      if (grp.length < 2) return;
+      let x0 = 1e9;
+      let y0 = 1e9;
+      let x1 = -1e9;
+      let y1 = -1e9;
+      grp.forEach((n) => {
+        const rr = n.r || 40;
+        x0 = Math.min(x0, n.x - rr);
+        x1 = Math.max(x1, n.x + rr + (n === zn ? 0 : 74));
+        y0 = Math.min(y0, n.y - rr);
+        y1 = Math.max(y1, n.y + rr + 16);
+        if (n._kb) {
+          x0 = Math.min(x0, n._kb.x0);
+          x1 = Math.max(x1, n._kb.x1);
+          y0 = Math.min(y0, n._kb.y0);
+          y1 = Math.max(y1, n._kb.y1);
+        }
+      });
+      const col = zn.cfg.color || '#888';
+      const P = 8;
+      frameSvg += `<rect class="zf" x="${(x0 - P).toFixed(1)}" y="${(y0 - P).toFixed(1)}" width="${(x1 - x0 + 2 * P).toFixed(1)}" height="${(y1 - y0 + 2 * P).toFixed(1)}" rx="20" fill="${col}" fill-opacity="0.07" stroke="${col}" stroke-opacity="0.4" stroke-width="1.5" stroke-dasharray="5 4" pointer-events="none"/>`;
+    });
+    // schwebende Wert-Labels an den Linien (line_labels: true / Liste von Linien-Namen, oder pro Kreis line_label: true/false)
+    const llOn = (l) => {
+      const f = [l.a.cfg && l.a.cfg.line_label, l.b.cfg && l.b.cfg.line_label];
+      if (f.includes(false)) return false;
+      if (f.includes(true)) return true;
+      const g = c.line_labels;
+      return g === true || (Array.isArray(g) && g.includes(l.id));
+    };
+    let llSvg = '';
+    links.forEach((l) => {
+      if (llOn(l)) {
+        l._ll = true;
+        llSvg += `<text class="ll" id="ll_${l.id}" text-anchor="middle" visibility="hidden">\u2013</text>`;
+      }
+    });
     this._links = links;
 
     let paths = '';
     let dots = '';
+    let lgDefs = '';
     for (const l of links) {
       paths += `<path id="l_${l.id}" d="${l.d}" fill="none" stroke="${l.ca}" stroke-width="2" opacity="0.3"/>`;
-      dots += `<path id="p_${l.id}" d="${l.d}" fill="none" stroke="none"/>
-        <circle id="dot_${l.id}" r="4.5" fill="${l.ca}" visibility="hidden"><animateMotion id="am_${l.id}" dur="3s" repeatCount="indefinite" keyPoints="0;1" keyTimes="0;1" calcMode="linear"><mpath href="#p_${l.id}"/></animateMotion></circle>`;
+      // Partikel nach Quelle: Funken bei Solar/Batterie, Tropfen sonst
+      const mkk = OPT.mk === 'particles' ? (['solar', 'battery'].includes(l.a.key) || ['solar', 'battery'].includes(l.b.key) ? 'spark' : 'drop') : OPT.mk;
+      l._mk = mkk;
+      const part = mkk === 'spark' || mkk === 'drop';
+      const mkEnd = mkk === 'dot' ? 'circle' : part ? 'g' : 'path';
+      let mks = '';
+      for (let i = 0; i < OPT.ndot; i++) {
+        const sf = i ? '_' + i : '';
+        const mkEl = mkk === 'dot' ? `<circle id="dot_${l.id}${sf}" r="4.5"` : part ? `<g id="dot_${l.id}${sf}"` : `<path id="dot_${l.id}${sf}" d="${vawMk(mkk, 5)}"`;
+        const body = part ? `<g transform="scale(1.7)">${mkk === 'spark' ? vawSpark(i) : vawDrop()}</g>` : '';
+        mks += `${mkEl} fill="${l.ca}" visibility="hidden"><animateMotion id="am_${l.id}${sf}" dur="3s" repeatCount="indefinite" keyPoints="0;1" keyTimes="0;1" calcMode="linear"${mkk === 'dot' ? '' : ' rotate="auto"'}><mpath href="#p_${l.id}"/></animateMotion>${body}</${mkEnd}>`;
+      }
+      dots += `<path id="p_${l.id}" d="${l.d}" fill="none" stroke="none"/>${mks}`;
+      if (OPT.lgrad) lgDefs += `<linearGradient id="lg_${l.id}" gradientUnits="userSpaceOnUse" x1="${l.a.x}" y1="${l.a.y}" x2="${l.b.x}" y2="${l.b.y}"><stop id="lgs0_${l.id}" offset="0" style="stop-color:${lc(l.a)}"/><stop id="lgs1_${l.id}" offset="1" style="stop-color:${lc(l.b)}"/></linearGradient>`;
     }
 
     // ---- Kreise ----
@@ -726,24 +1333,21 @@ class FlowCardVAW extends HTMLElement {
       const pad = n.pad || 0;
       let ringSvg = '';
       if (n.ring) {
-        const RR = n.r + 9;
-        n.ringC = 2 * Math.PI * RR;
-        ringSvg = `<circle cx="${n.x}" cy="${n.y}" r="${RR}" fill="none" stroke="#888" stroke-width="5" opacity="0.22"/>
-          <circle id="rg_${n.key}" cx="${n.x}" cy="${n.y}" r="${RR}" fill="none" stroke="#43a047" stroke-width="5" stroke-linecap="round" stroke-dasharray="0 ${n.ringC}" opacity="0" transform="rotate(-90 ${n.x} ${n.y})"/>`;
+        n.ringC = vawRingLen(SH, n.r, 9);
+        ringSvg = `${vawRingEl(SH, n.x, n.y, n.r, 9, 'fill="none" stroke="#888" stroke-width="5" opacity="0.22"')}
+          ${vawRingEl(SH, n.x, n.y, n.r, 9, `id="rg_${n.key}" fill="none" stroke="#43a047" stroke-width="5" stroke-linecap="round" stroke-dasharray="0 ${n.ringC}" opacity="0"`)}`;
       } else if (n.groups) {
-        const RR = n.r + 9;
-        n.ringC = 2 * Math.PI * RR;
-        ringSvg = `<circle cx="${n.x}" cy="${n.y}" r="${RR}" fill="none" stroke="#888" stroke-width="5" opacity="0.22"/>
+        n.ringC = vawRingLen(SH, n.r, 9);
+        ringSvg = `${vawRingEl(SH, n.x, n.y, n.r, 9, 'fill="none" stroke="#888" stroke-width="5" opacity="0.22"')}
           ${n.groups
-            .map((g) => `<circle id="hs_${g.key}" cx="${n.x}" cy="${n.y}" r="${RR}" fill="none" stroke="${g.cfg.color}" stroke-width="5" stroke-dasharray="0 ${n.ringC}" opacity="0" transform="rotate(-90 ${n.x} ${n.y})"/>`)
+            .map((g) => vawRingEl(SH, n.x, n.y, n.r, 9, `id="hs_${g.key}" fill="none" stroke="${vawEsc(g.cfg.color)}" stroke-width="5" stroke-dasharray="0 ${n.ringC}" opacity="0"`))
             .join('\n          ')}`;
       }
       if (n.dev && n.cfg.switch) swBtn(n.key, n.cfg, n.x, n.y, n.r, col);
       if (!ringSvg && n.capRing) {
-        const RR = n.r + 9;
-        n.ringC = 2 * Math.PI * RR;
-        ringSvg = `<circle cx="${n.x}" cy="${n.y}" r="${RR}" fill="none" stroke="#888" stroke-width="5" opacity="0.22"/>
-          <circle id="cg_${n.key}" cx="${n.x}" cy="${n.y}" r="${RR}" fill="none" stroke="${n.capRing === 'solar' ? col : '#43a047'}" stroke-width="5" stroke-linecap="round" stroke-dasharray="0 ${n.ringC.toFixed(1)}" opacity="0" transform="rotate(-90 ${n.x} ${n.y})"/>`;
+        n.ringC = vawRingLen(SH, n.r, 9);
+        ringSvg = `${vawRingEl(SH, n.x, n.y, n.r, 9, 'fill="none" stroke="#888" stroke-width="5" opacity="0.22"')}
+          ${vawRingEl(SH, n.x, n.y, n.r, 9, `id="cg_${n.key}" fill="none" stroke="${n.capRing === 'solar' ? col : '#43a047'}" stroke-width="5" stroke-linecap="round" stroke-dasharray="0 ${n.ringC.toFixed(1)}" opacity="0"`)}`;
       }
       // unter dem Netz-Kreis l\u00e4uft eine Linie (senkrecht: zum Haus, waagrecht: zur Spitze) -> Name links neben die Linie
       const besideLine = n.key === 'grid' && !side && !top && (vert || !!peakCfg);
@@ -811,17 +1415,33 @@ class FlowCardVAW extends HTMLElement {
         })
         .join('\n           ');
       const isz = n.r <= 34 ? 14 : 20;
-      icons += `<ha-icon id="i_${n.key}" icon="${n.cfg.icon}" style="left:${(n.x / VW) * 100}%;top:${(iconY / VH) * 100}%;color:${ic};--mdc-icon-size:${((isz / VW) * 100).toFixed(3)}cqw"></ha-icon>`;
+      icons += `<ha-icon id="i_${n.key}" icon="${vawEsc(n.cfg.icon)}" style="left:${(n.x / VW) * 100}%;top:${(iconY / VH) * 100}%;color:${vawEsc(ic)};--mdc-icon-size:${((isz / VW) * 100).toFixed(3)}cqw"></ha-icon>`;
+      let fillSvg = '';
+      if ((n.cfg.fill_level !== undefined ? n.cfg.fill_level === true : OPT.fill) && (n.key === 'battery' || n.key === 'solar')) {
+        fillSvg = `<clipPath id="fc_${n.key}">${vawShapeEl(SH, n.x, n.y, n.r - 2, '')}</clipPath><rect id="fv_${n.key}" x="${n.x - n.r}" y="${n.y - n.r}" width="${2 * n.r}" height="${2 * n.r}" fill="${col}" fill-opacity="0.22" clip-path="url(#fc_${n.key})" pointer-events="none" style="transform-box:fill-box;transform-origin:50% 100%;transform:scaleY(0);transition:transform 0.8s ease"/>`;
+      }
+      let sparkSvg = '';
+      n.spE = null;
+      if (n.cfg.sparkline !== undefined ? n.cfg.sparkline === true && n.r >= 26 : SPARK && n.r >= 40) {
+        const se = vawSparkEnts(n);
+        if (se.length) {
+          n.spE = se;
+          n.spG = { x: n.x - n.r * 0.75, y: n.y + n.r * 0.14, w: n.r * 1.5, h: n.r * 0.48 };
+          sparkSvg = `<g class="spk" id="spk_${n.key}" pointer-events="none"><path class="spa" fill="${col}" fill-opacity="0.16" stroke="none"/><path class="spl" fill="none" stroke="${col}" stroke-opacity="0.6" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></g>`;
+        }
+      }
       // fester Hintergrund au\u00dferhalb der Gruppe: beim Ausgrauen (opacity) scheinen sonst die Linien durch den Kreis
       circles += `
-        <circle cx="${n.x}" cy="${n.y}" r="${n.r}" fill="var(--card-background-color, #fff)"/>
+        ${vawShapeEl(SH, n.x, n.y, n.r, 'fill="var(--card-background-color, #fff)"')}
         <g class="node" id="g_${n.key}">
           ${ringSvg}
-          <circle id="c_${n.key}" cx="${n.x}" cy="${n.y}" r="${n.r}" fill="var(--card-background-color, #fff)" stroke="${col}" stroke-width="4" style="--gc:${col}"/>
-          ${OPT.grad ? `<circle cx="${n.x}" cy="${n.y}" r="${n.r}" fill="url(#${gradId(col)})" pointer-events="none"/>` : ''}
+          ${vawShapeEl(SH, n.x, n.y, n.r, `id="c_${n.key}" fill="var(--card-background-color, #fff)" stroke="${col}" stroke-width="4" style="--gc:${col}"`)}
+          ${OPT.grad ? vawShapeEl(SH, n.x, n.y, n.r, `fill="url(#${gradId(col)})" pointer-events="none"`) : ''}
+          ${fillSvg}
+          ${sparkSvg}
           ${body}
           ${hasSoc ? `<text id="soc_${n.key}" x="${n.x}" y="${socY}" class="p" style="font-size:14px;${tc}"></text>` : ''}
-          <text x="${lx}" y="${ny}" class="n" style="text-anchor:${lan}">${n.cfg.name} ${lbl}</text>
+          <text x="${lx}" y="${ny}" class="n" style="text-anchor:${lan}">${vawEsc(n.cfg.name === undefined || n.cfg.name === null ? '' : n.cfg.name)} ${lbl}</text>
           <text id="sec_${n.key}" x="${lx}" y="${sy2}" class="sec" style="text-anchor:${lan}"></text>
           ${meterSvg}
         </g>`;
@@ -843,19 +1463,38 @@ class FlowCardVAW extends HTMLElement {
       stbIcons += `<ha-icon id="stbi_${i}" icon="mdi:door-closed" style="left:${(bx / VW) * 100}%;top:${(by0 / VH) * 100}%;color:#888;--mdc-icon-size:${(((rb + 1) / VW) * 100).toFixed(3)}cqw"></ha-icon>`;
     });
     // Kopfzeile links oben: Titel, darunter Datum und Uhrzeit
-    const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const esc = vawEsc;
     const stHdr = stCfg.some((o) => o.show.includes('header'));
     const stInfo = stCfg.some((o) => o.show.includes('info'));
     const hdr = c.title || c.date || c.time || stHdr
       ? `<div class="hdr">${c.title || c.date || c.time ? `<div class="hl">${c.title ? `<div class="t">${esc(c.title)}</div>` : ''}${c.date || c.time ? '<div class="dt"><span class="hd"></span>' + (c.date && c.time ? ' \u00b7 ' : '') + '<span class="ht"></span></div>' : ''}</div>` : ''}${stHdr ? '<div class="hs"></div>' : ''}</div>`
       : '';
-    const defsSvg = gradDefs.size
-      ? '<defs>' + [...gradDefs].map(([gc, gi]) => `<radialGradient id="${gi}" cx="35%" cy="28%" r="80%"><stop offset="0" style="stop-color:${gc};stop-opacity:0.22"/><stop offset="1" style="stop-color:${gc};stop-opacity:0.03"/></radialGradient>`).join('') + '</defs>'
+    const defsSvg = gradDefs.size || lgDefs
+      ? '<defs>' + [...gradDefs].map(([gc, gi]) => `<radialGradient id="${gi}" cx="35%" cy="28%" r="80%"><stop offset="0" style="stop-color:${gc};stop-opacity:0.22"/><stop offset="1" style="stop-color:${gc};stop-opacity:0.03"/></radialGradient>`).join('') + lgDefs + '</defs>'
       : '';
     const I0 = c.info && typeof c.info === 'object' ? c.info : {};
-    const infoOn = !!(stInfo || I0.autarky || I0.self_consumption || I0.battery_time || (Array.isArray(I0.items) && I0.items.length) || (c.grid && c.grid.price));
+    const infoOn = !!(stInfo || I0.autarky || I0.self_consumption || I0.battery_time || I0.co2_entity || I0.co2 || (Array.isArray(I0.items) && I0.items.length) || (c.grid && c.grid.price));
     this._infoOn = infoOn;
-    const extraH = (hdr ? 64 : 0) + (infoOn ? 46 : 0);
+    const viewsL = this._views || [];
+    const tabsHtml = viewsL.length > 1
+      ? `<div class="tabs">${viewsL.map((v, i) => `<button class="tab${i === this._vi ? ' on' : ''}" data-vi="${i}">${v.icon ? `<ha-icon icon="${esc(v.icon)}"></ha-icon>` : ''}<span>${esc(v.name || 'Ansicht ' + (i + 1))}</span></button>`).join('')}</div>`
+      : '';
+    const laYaml = () => {
+      const P = this._pos || {};
+      const ks = Object.keys(P).filter((k) => P[k] && (P[k].x || P[k].y));
+      const vn = viewsL.length > 1 && viewsL[this._vi] ? '# in Ansicht "' + (viewsL[this._vi].name || this._vi + 1) + '" (unter views) einfuegen\n' : '';
+      return vn + (ks.length ? 'positions:\n' + ks.map((k) => `  ${k}: {x: ${P[k].x || 0}, y: ${P[k].y || 0}}`).join('\n') : 'positions: {}');
+    };
+    this._laYamlText = laYaml;
+    const laHtml = (c.layout_assistant === true ? `<div class="labtn${this._la ? ' on' : ''}" data-act="la" title="Layout bearbeiten"><ha-icon icon="mdi:cursor-move"></ha-icon></div>` : '')
+      + (this._la ? `${this._laTxt ? `<textarea class="lat" readonly>${esc(laYaml())}</textarea>` : ''}<div class="labar"><span>Kreise ziehen</span><button data-act="lareset">Zur\u00fccksetzen</button><button data-act="lacopy">YAML</button><button data-act="ladone">Fertig</button></div>` : '');
+    const ttHrs = this._ttHours();
+    const ttHtml = c.time_travel === true
+      ? (this._ttOn
+        ? `<div class="ttbar"><input type="range" class="tts" min="0" max="${ttHrs * 60}" step="5" value="${ttHrs * 60 - (this._ttMin || 0)}"><span class="ttl">${this._ttLabel(this._ttMin || 0)}</span><button data-act="ttnow">Jetzt</button><div class="ttx" data-act="tt" title="Schlie\u00dfen"><ha-icon icon="mdi:close"></ha-icon></div></div>`
+        : `<div class="ttbtn" data-act="tt" title="Zeitreise"><ha-icon icon="mdi:history"></ha-icon></div>`)
+      : '';
+    const extraH = (hdr ? 64 : 0) + (infoOn ? 46 : 0) + (tabsHtml ? 40 : 0);
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; }
@@ -886,7 +1525,7 @@ class FlowCardVAW extends HTMLElement {
         .spw:hover { background: var(--sc, rgba(127, 127, 127, 0.5)); }
         .spw ha-icon { --mdc-icon-size: 15px; color: var(--primary-text-color); position: static; transform: none; pointer-events: none; }
         g.stc.alert, g.stb.alert { animation: vaw-pulse 1s ease-in-out infinite; }
-        g.stc circle[id^="stk_"] { transition: stroke 0.4s; }
+        g.stc [id^="stk_"] { transition: stroke 0.4s; }
         .hdr .t { font-size: 18px; font-weight: 600; color: var(--primary-text-color); }
         .hdr .dt { font-size: 13px; color: var(--secondary-text-color); }
         ha-card.fs.hasx { flex-direction: column; }
@@ -898,14 +1537,14 @@ class FlowCardVAW extends HTMLElement {
         .chip[data-e] { cursor: pointer; }
         .chip ha-icon { position: static; transform: none; --mdc-icon-size: 16px; pointer-events: none; color: var(--secondary-text-color); }
         .chip .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
-        ha-card.grad g.node > circle[id^="c_"] { filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3)); }
-        ha-card.glow g.node.on > circle[id^="c_"] { filter: drop-shadow(0 0 6px var(--gc)); }
-        g.node.pulse > circle[id^="c_"] { animation: vaw-glow 2.6s ease-in-out infinite; }
+        ha-card.grad g.node > [id^="c_"] { filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3)); }
+        ha-card.glow g.node.on > [id^="c_"] { filter: drop-shadow(0 0 6px var(--gc)); }
+        g.node.pulse > [id^="c_"] { animation: vaw-glow 2.6s ease-in-out infinite; }
         @keyframes vaw-glow { 0%, 100% { filter: drop-shadow(0 0 2px var(--gc)); } 50% { filter: drop-shadow(0 0 11px var(--gc)); } }
         text.lim { fill: var(--vaw-lim, #e53935) !important; }
         .wrap { transition: opacity 0.8s; }
         ha-card.calm .wrap { opacity: var(--calm-dim, 0.75); }
-        ha-card.calm g.node > circle[id^="c_"], ha-card.calm g.node.on > circle[id^="c_"], ha-card.calm g.node.pulse > circle[id^="c_"] { filter: none; animation: none; }
+        ha-card.calm g.node > [id^="c_"], ha-card.calm g.node.on > [id^="c_"], ha-card.calm g.node.pulse > [id^="c_"] { filter: none; animation: none; }
         g.sw { cursor: pointer; }
         g.sw .swb { fill: var(--card-background-color, #1c1c1c); stroke: var(--secondary-text-color); stroke-width: 2; transition: fill 0.25s, stroke 0.25s; }
         g.sw .swi { fill: none; stroke: var(--secondary-text-color); stroke-width: 2; stroke-linecap: round; transition: stroke 0.25s; }
@@ -914,13 +1553,16 @@ class FlowCardVAW extends HTMLElement {
         g.sw:hover .swb { stroke: var(--sc); }
         g.sw.un { opacity: 0.35; cursor: default; }
         ha-card.tap g.node, ha-card.tap g.kid { cursor: pointer; }
-        circle[id^="cg_"], circle[id^="kr_"] { transition: stroke-dasharray 0.8s linear, stroke 0.4s; }
-        ${OPT.ns !== 1 ? 'g.node .p { transform-box: fill-box; transform-origin: 50% 50%; transform: scale(var(--ns)); }' : ''}
+        [id^="cg_"], [id^="kr_"] { transition: stroke-dasharray 0.8s linear, stroke 0.4s; }
+        ${OPT.ns !== 1 ? 'g.node .p { transform: scale(var(--ns)); }' : ''}
         .fsbtn { position: absolute; right: 8px; bottom: 5px; z-index: 3; width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; background: rgba(127, 127, 127, 0.18); color: var(--secondary-text-color); opacity: 0.7; transition: opacity 0.2s, background 0.2s; -webkit-tap-highlight-color: transparent; }
         .fsbtn:hover { opacity: 1; background: rgba(127, 127, 127, 0.3); }
         .fsbtn ha-icon { position: static; transform: none; --mdc-icon-size: 22px; pointer-events: none; }
         ha-card.fs { position: fixed; inset: 0; z-index: 9999; width: 100vw; height: 100vh; border-radius: 0; padding: 0; display: flex; align-items: center; justify-content: center; overflow: auto; background: var(--card-background-color, #111); }
         ha-card.fs .wrap { width: min(100vw, calc(100vh * var(--ar))); }
+        ha-card.fs.haszm { overflow: hidden; }
+        ha-card.fs .wrap.zm { overflow: visible; }
+        ha-card.fs .hdr, ha-card.fs .info { position: relative; z-index: 2; }
         svg { width: 100%; height: auto; display: block; }
         ha-icon { position: absolute; transform: translate(-50%, -50%); --mdc-icon-size: 20px; pointer-events: none; }
         text { text-anchor: middle; fill: var(--primary-text-color); font-family: var(--paper-font-body1_-_font-family, sans-serif); }
@@ -930,23 +1572,251 @@ class FlowCardVAW extends HTMLElement {
         .n, .sec { paint-order: stroke; stroke: var(--card-background-color, #1c1c1c); stroke-width: 4px; stroke-linejoin: round; }
         .sec { font-size: 11px; fill: var(--secondary-text-color); opacity: 0.85; }
         g.node, ha-icon { transition: opacity 0.4s; }
-        circle[id^="hs_"] { transition: stroke-dasharray 0.8s linear, stroke-dashoffset 0.8s linear; }
-        circle[id^="rg_"] { transition: stroke-dasharray 0.8s linear, stroke 0.4s; }
+        [id^="hs_"] { transition: stroke-dasharray 0.8s linear, stroke-dashoffset 0.8s linear; }
+        [id^="rg_"] { transition: stroke-dasharray 0.8s linear, stroke 0.4s; }
         @keyframes vaw-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
         .alert { animation: vaw-pulse 1s ease-in-out infinite; }
+        ha-card.bgd { isolation: isolate; }
+        .bgl { position: absolute; inset: 0; z-index: -1; border-radius: inherit; overflow: hidden; pointer-events: none; }
+        .bgl i, .bgl b { position: absolute; inset: 0; }
+        .bgl i { background-size: cover; background-position: center; background-repeat: no-repeat; }
+        .bgl.blur i { inset: -30px; }
+        .bga { position: absolute; inset: 0; z-index: -1; border-radius: inherit; overflow: hidden; pointer-events: none; }
+        .bga.drift { background: radial-gradient(55% 45% at 20% 25%, rgba(110, 130, 255, 0.22), transparent 70%), radial-gradient(50% 55% at 80% 75%, rgba(0, 220, 170, 0.18), transparent 70%), radial-gradient(45% 40% at 70% 20%, rgba(255, 120, 200, 0.14), transparent 70%); background-size: 180% 180%; animation: vaw-drift 32s ease-in-out infinite alternate; }
+        @keyframes vaw-drift { 0% { background-position: 0% 0%; } 100% { background-position: 100% 100%; } }
+        .bga.stars i { position: absolute; border-radius: 50%; background: #fff; opacity: 0.15; animation: vaw-tw 4s ease-in-out infinite; }
+        .bga.stars.dk i { background: #334155; }
+        @keyframes vaw-tw { 0%, 100% { opacity: 0.1; transform: scale(0.8); } 50% { opacity: 0.95; transform: scale(1.25); } }
+        ha-card.lc-square path[id^="l_"] { stroke-linejoin: miter; stroke-miterlimit: 10; }
+        ha-card.ls-dashed path[id^="l_"] { stroke-dasharray: 9 7; }
+        ha-card.ls-dotted path[id^="l_"] { stroke-dasharray: 0.1 7; stroke-linecap: round; }
+        ha-card.ls-flow path[id^="l_"] { stroke-dasharray: 10 8; }
+        ha-card.ls-flow path[id^="l_"].on { animation: vaw-dash 0.9s linear infinite; }
+        ha-card.ls-flow path[id^="l_"].on.rev { animation-direction: reverse; }
+        @keyframes vaw-dash { to { stroke-dashoffset: -18; } }
+        ha-card.ls-neon path[id^="l_"].on { filter: drop-shadow(0 0 3px currentColor) drop-shadow(0 0 7px currentColor); }
+        ha-card.calm path[id^="l_"] { animation: none !important; filter: none !important; }
+        @media (prefers-reduced-motion: reduce) { ha-card.ls-flow path[id^="l_"].on { animation: none; } }
+        ha-card.calm .bga, ha-card.calm .bga i, ha-card.calm .bgw i, ha-card.calm .bgw b { animation-play-state: paused; }
+        .bgw { position: absolute; inset: 0; z-index: -1; border-radius: inherit; overflow: hidden; pointer-events: none; }
+        .bgw i, .bgw b { position: absolute; display: block; }
+        .bgw i.r { top: -12%; width: 1.6px; background: linear-gradient(transparent, rgba(190, 215, 255, 0.95)); animation: vaw-rain 0.9s linear infinite; }
+        .bgw.dk i.r { background: linear-gradient(transparent, rgba(60, 100, 170, 0.75)); }
+        .bgw.hail i.r { width: 3px; height: 3px !important; border-radius: 50%; background: #fff; }
+        @keyframes vaw-rain { to { top: 108%; transform: translateX(-10px); } }
+        .bgw i.s { top: -5%; border-radius: 50%; background: #fff; opacity: 0.8; animation: vaw-snow 10s linear infinite; }
+        .bgw.dk i.s { background: #8fa3b8; }
+        @keyframes vaw-snow { to { top: 105%; transform: translateX(var(--dx, 0px)); } }
+        .bgw i.c { top: var(--t); left: -80%; width: var(--w); height: 38%; border-radius: 50%; background: radial-gradient(closest-side, rgba(255, 255, 255, 0.17), transparent); filter: blur(6px); animation: vaw-cloud 90s linear infinite; }
+        .bgw.dk i.c { background: radial-gradient(closest-side, rgba(70, 90, 120, 0.2), transparent); }
+        @keyframes vaw-cloud { to { left: 105%; } }
+        .bgw i.f { left: -20%; width: 140%; height: 45%; background: linear-gradient(90deg, transparent, rgba(200, 210, 225, 0.2), transparent); filter: blur(10px); animation: vaw-fog 28s ease-in-out infinite alternate; }
+        .bgw.dk i.f { background: linear-gradient(90deg, transparent, rgba(110, 125, 145, 0.25), transparent); }
+        @keyframes vaw-fog { from { transform: translateX(-12%); } to { transform: translateX(12%); } }
+        .bgw i.sn { right: -25%; top: -45%; width: 80%; height: 130%; background: radial-gradient(closest-side, rgba(255, 205, 90, 0.32), transparent); animation: vaw-sun 9s ease-in-out infinite alternate; }
+        @keyframes vaw-sun { from { opacity: 0.55; transform: scale(0.95); } to { opacity: 1; transform: scale(1.05); } }
+        .bgw i.wd { top: var(--t); left: -140px; width: var(--w); height: 2px; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.8), transparent); animation: vaw-wind var(--d) linear infinite; }
+        .bgw.dk i.wd { background: linear-gradient(90deg, transparent, rgba(60, 80, 110, 0.5), transparent); }
+        @keyframes vaw-wind { to { left: 110%; } }
+        .bgw i.sr { right: -45%; top: -95%; width: 130%; aspect-ratio: 1 / 1; background: repeating-conic-gradient(rgba(255, 215, 110, 0.16) 0deg 5deg, transparent 5deg 16deg); -webkit-mask-image: radial-gradient(closest-side, #000 15%, transparent 90%); mask-image: radial-gradient(closest-side, #000 15%, transparent 90%); animation: vaw-rays 120s linear infinite; }
+        @keyframes vaw-rays { to { transform: rotate(360deg); } }
+        .bgw i.rb { left: 50%; top: 14%; width: 92%; aspect-ratio: 2 / 1; transform: translateX(-50%); border-radius: 100% 100% 0 0; background: radial-gradient(circle at 50% 100%, transparent 56%, rgba(255, 60, 60, 0.26) 58%, rgba(255, 160, 0, 0.26) 61%, rgba(255, 235, 0, 0.24) 64%, rgba(60, 200, 60, 0.24) 67%, rgba(40, 130, 255, 0.26) 70%, rgba(140, 60, 220, 0.26) 73%, transparent 75%); animation: vaw-rb 5s ease both; }
+        @keyframes vaw-rb { from { opacity: 0; } to { opacity: 1; } }
+        .bgw b.bolt { top: 4%; left: var(--l); width: 56px; height: 60%; background: #fff; clip-path: polygon(58% 0, 18% 50%, 46% 50%, 28% 100%, 84% 38%, 54% 38%, 74% 0); opacity: 0; filter: drop-shadow(0 0 10px #cfe3ff); animation: vaw-bolt 8s infinite; }
+        @keyframes vaw-bolt { 0%, 91.5%, 100% { opacity: 0; } 92% { opacity: 0.95; } 93.2% { opacity: 0; } 94% { opacity: 0.75; } 96% { opacity: 0; } }
+        .bgw b.fl { inset: 0; background: #fff; opacity: 0; animation: vaw-fl 8s infinite; }
+        @keyframes vaw-fl { 0%, 91%, 100% { opacity: 0; } 92% { opacity: 0.5; } 93% { opacity: 0.05; } 94% { opacity: 0.38; } 97% { opacity: 0; } }
+        @media (prefers-reduced-motion: reduce) { .bgw i, .bgw b { animation: none; } }
+        @media (prefers-reduced-motion: reduce) { .bga, .bga i { animation: none; } }
+        ha-card.cs-flat g.node > [id^="c_"], ha-card.cs-flat.glow g.node.on > [id^="c_"] { filter: none; }
+        ha-card.cs-flat g.node.pulse > [id^="c_"] { animation: none; }
+        ha-card.cs-flat svg [fill^="url"] { display: none; }
+        ha-card.cs-glass svg > [fill^="var("]:not([id]) { fill: color-mix(in srgb, var(--card-background-color, #1c1c1c) 38%, transparent); }
+        ha-card.cs-glass g.node > [id^="c_"], ha-card.cs-glass [id^="kc_"] { fill: color-mix(in srgb, var(--card-background-color, #1c1c1c) 38%, transparent); stroke-width: 2.5; }
+        ha-card.cs-glass g.node > [id^="c_"] { filter: drop-shadow(0 3px 8px rgba(0, 0, 0, 0.28)); }
+        ha-card.cs-neon g.node > [id^="c_"] { stroke-width: 2.5; filter: none; }
+        ha-card.cs-neon g.node.on > [id^="c_"] { filter: drop-shadow(0 0 4px var(--gc)) drop-shadow(0 0 11px var(--gc)); }
+        ha-card.cs-neon svg [fill^="url"] { display: none; }
+        .tabs { display: flex; gap: 6px; padding: 2px 4px 8px; overflow-x: auto; scrollbar-width: none; position: relative; z-index: 2; }
+        .tabs::-webkit-scrollbar { display: none; }
+        .tab { display: inline-flex; align-items: center; gap: 5px; border: 0; border-radius: 16px; padding: 5px 13px; font: inherit; font-size: 13px; color: var(--primary-text-color); background: rgba(127, 127, 127, 0.18); cursor: pointer; white-space: nowrap; --mdc-icon-size: 16px; }
+        .tab.on { background: var(--primary-color, #03a9f4); color: #fff; }
+        .tab ha-icon { --mdc-icon-size: 16px; }
+        ha-card.hastt { padding-bottom: 42px; }
+        ha-card.hastt.fs { padding-bottom: 0; }
+        ha-card.tton { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: -2px; }
+        ha-card.hasla .ttbtn { right: 44px; }
+        .ttbtn { position: absolute; right: 8px; top: 8px; z-index: 6; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: rgba(127, 127, 127, 0.22); color: var(--primary-text-color); cursor: pointer; --mdc-icon-size: 18px; }
+        .ttbar { position: absolute; left: 8px; right: 92px; bottom: 6px; z-index: 6; display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 16px; background: var(--card-background-color, #1c1c1c); border: 1px solid rgba(127, 127, 127, 0.45); font-size: 12px; color: var(--primary-text-color); }
+        .ttbar .tts { flex: 1; min-width: 60px; accent-color: var(--primary-color, #03a9f4); }
+        .ttbar .ttl { white-space: nowrap; opacity: 0.85; }
+        .ttbar button { border: 0; border-radius: 12px; padding: 4px 10px; background: var(--primary-color, #03a9f4); color: #fff; cursor: pointer; font: inherit; }
+        .ttx { cursor: pointer; display: flex; --mdc-icon-size: 18px; }
+        .tab ha-icon, .labtn ha-icon, .ttbtn ha-icon, .ttx ha-icon { position: static; transform: none; pointer-events: none; }
+        .zf { transition: opacity 0.3s; }
+        .ll { font-size: 10px; font-weight: 600; fill: var(--primary-text-color); paint-order: stroke; stroke: var(--card-background-color, #1c1c1c); stroke-width: 3.5px; stroke-linejoin: round; pointer-events: none; }
+        .ci { position: absolute; transform: translate(-50%, -50%); width: var(--mdc-icon-size, 20px); height: var(--mdc-icon-size, 20px); object-fit: contain; pointer-events: none; display: block; transition: opacity 0.4s; }
+        .ci.inl { position: static; transform: none; display: inline-block; flex: none; width: 18px; height: 18px; }
+        .ci.tint { background: currentColor; -webkit-mask-size: contain; mask-size: contain; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; -webkit-mask-position: center; mask-position: center; }
+        .labtn { position: absolute; top: 8px; right: 8px; z-index: 6; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: rgba(127, 127, 127, 0.22); color: var(--primary-text-color); cursor: pointer; --mdc-icon-size: 18px; }
+        .labtn.on { background: var(--primary-color, #03a9f4); color: #fff; }
+        .labar { position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 6; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 10px; border-radius: 12px; background: var(--card-background-color, #1c1c1c); border: 1px solid rgba(127, 127, 127, 0.45); font-size: 13px; color: var(--primary-text-color); }
+        .labar span { flex: 1; opacity: 0.8; }
+        .labar button { border: 0; border-radius: 14px; padding: 6px 12px; background: var(--primary-color, #03a9f4); color: #fff; cursor: pointer; font: inherit; }
+        .lat { position: absolute; left: 8px; right: 8px; bottom: 62px; z-index: 6; height: 96px; font: 12px monospace; padding: 6px; border-radius: 8px; border: 1px solid rgba(127, 127, 127, 0.5); background: var(--card-background-color, #1c1c1c); color: var(--primary-text-color); resize: none; }
+        ha-card.la g.node { cursor: move; }
+        ha-card.la .wrap { touch-action: none; }
+        ha-card.la g.node > [id^="c_"] { stroke-dasharray: 7 5; }
+        ha-card.la .bga, ha-card.la .bga i, ha-card.la .bgw i, ha-card.la .bgw b { animation: none !important; }
+        ha-card.compact { padding: 4px; }
+        ha-card.compact.hasfs, ha-card.compact.haszm { padding-bottom: 38px; }
+        ha-card.compact .hdr { padding: 0 4px 4px; }
+        ha-card.compact .hdr .t { font-size: 15px; }
+        ha-card.compact .hdr .dt, ha-card.compact .sec, ha-card.compact .zbtns { display: none; }
+        ha-card.compact .n { font-size: 15px; }
+        ha-card.compact g.node .p, ha-card.compact g.kid .p { transform: scale(calc(var(--ns, 1) * 1.12)); }
+        ha-card.compact .info { padding: 4px 40px 0 4px; gap: 4px; }
+        ha-card.compact .chip { font-size: 11.5px; padding: 2px 8px; }
+        ha-card.compact .sp { font-size: 12px; padding: 3px 9px 3px 6px; }
       </style>
-      <ha-card class="${c.fullscreen_button === false ? '' : 'hasfs'}${OPT.zoom ? ' haszm' : ''}${hdr || infoOn ? ' hasx' : ''}${OPT.grad ? ' grad' : ''}${OPT.glow ? ' glow' : ''}${OPT.tap ? ' tap' : ''}" style="--ar:${(VW / VH).toFixed(4)};--extra:${extraH}px;--ns:${OPT.ns};--vaw-lim:${this._lim.color};--calm-dim:${c.calm && c.calm.dim !== undefined && !isNaN(Number(c.calm.dim)) ? Math.max(0.2, Math.min(1, Number(c.calm.dim))) : 0.75}">
+      <ha-card class="${c.fullscreen_button === false ? '' : 'hasfs'}${OPT.zoom ? ' haszm' : ''}${hdr || infoOn ? ' hasx' : ''}${this._la ? ' la' : ''}${c.layout_assistant === true ? ' hasla' : ''}${c.time_travel === true && this._ttOn ? ' hastt' : ''}${this._ttOn ? ' tton' : ''}${OPT.grad ? ' grad' : ''}${OPT.glow ? ' glow' : ''}${OPT.tap ? ' tap' : ''}" style="--ar:${(VW / VH).toFixed(4)};--extra:${extraH}px;--ns:${OPT.ns};--vaw-lim:${this._lim.color};--calm-dim:${c.calm && c.calm.dim !== undefined && !isNaN(Number(c.calm.dim)) ? Math.max(0.2, Math.min(1, Number(c.calm.dim))) : 0.75}">
         ${hdr}
+        ${tabsHtml}
         <div class="wrap${OPT.zoom ? ' zm' : ''}">
           <div class="zi">
-            <svg viewBox="0 0 ${VW} ${VH}">${defsSvg}${paths}${dots}${circles}${kidSvg}${stSvg}${swSvg}${stbSvg}</svg>
+            <svg viewBox="0 0 ${VW} ${VH}">${defsSvg}${frameSvg}${paths}${dots}${circles}${kidSvg}${llSvg}${stSvg}${swSvg}${stbSvg}</svg>
             ${icons}${stIcons}${stbIcons}
           </div>
         </div>
         ${OPT.zoom ? `<div class="zbtns${c.fullscreen_button === false ? ' nofs' : ''}"><div class="zb zr" data-z="r" title="Zoom zur\u00fccksetzen"><ha-icon icon="mdi:fit-to-screen-outline"></ha-icon></div><div class="zb" data-z="-" title="Verkleinern"><ha-icon icon="mdi:magnify-minus-outline"></ha-icon></div><div class="zb" data-z="+" title="Vergr\u00f6\u00dfern"><ha-icon icon="mdi:magnify-plus-outline"></ha-icon></div></div>` : ''}
         ${infoOn ? '<div class="info"></div>' : ''}
         ${c.fullscreen_button === false ? '' : '<div class="fsbtn" title="Vollbild"><ha-icon icon="mdi:fullscreen"></ha-icon></div>'}
+        ${laHtml}
+        ${ttHtml}
       </ha-card>`;
+    this._applyBg();
+    this._applyLook();
+    this._iconFix(this.shadowRoot);
+    this._links.forEach((l) => {
+      if (!l._ll) return;
+      const p = this.shadowRoot.getElementById('l_' + l.id);
+      const t = this.shadowRoot.getElementById('ll_' + l.id);
+      if (p && t && p.getTotalLength) {
+        try {
+          const q = p.getPointAtLength(p.getTotalLength() * 0.5);
+          t.setAttribute('x', q.x.toFixed(1));
+          t.setAttribute('y', (q.y - 5).toFixed(1));
+        } catch (er) { /* ohne Label-Position */ }
+      }
+    });
+    this._spDirty = true;
+    // Skalierung der Zahlen um den eigenen Mittelpunkt (Ursprung in Nutzereinheiten, funktioniert auch in Safari)
+    this.shadowRoot.querySelectorAll('svg text.p').forEach((t) => {
+      const x = t.getAttribute('x');
+      const y = t.getAttribute('y');
+      if (x !== null && y !== null) t.style.transformOrigin = x + 'px ' + y + 'px';
+    });
+    const sr0 = this.shadowRoot;
+    sr0.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => {
+      this._vi = Number(b.getAttribute('data-vi')) || 0;
+      try { localStorage.setItem('flow-card-vaw-view:' + this._viewList().map((v) => v.name).join('|'), String(this._vi)); } catch (e) { /* ignorieren */ }
+      if (this._z) { this._z.s = 1; this._z.x = 0; this._z.y = 0; }
+      this._applyCfg();
+    }));
+    const taEl = sr0.querySelector('.lat');
+    if (taEl) {
+      taEl.focus();
+      taEl.select();
+    }
+    if (!this._laInit) {
+      this._laInit = true;
+      const pt = (e) => {
+        const svg = sr0.querySelector('svg');
+        const m = svg && svg.getScreenCTM();
+        if (!m) return null;
+        const p = svg.createSVGPoint();
+        p.x = e.clientX;
+        p.y = e.clientY;
+        const q = p.matrixTransform(m.inverse());
+        return [q.x, q.y];
+      };
+      this._laMv = (e) => {
+        const d = this._drag;
+        if (!d) return;
+        const p = pt(e);
+        if (!p) return;
+        const cl = (v) => Math.max(-500, Math.min(500, Math.round(v / 2) * 2));
+        this._pos[d.key] = { x: cl(d.ox + p[0] - d.sx), y: cl(d.oy + p[1] - d.sy) };
+        if (!this._laRaf) this._laRaf = requestAnimationFrame(() => { this._laRaf = 0; this._render(); });
+      };
+      this._laUp = () => {
+        window.removeEventListener('pointermove', this._laMv);
+        window.removeEventListener('pointerup', this._laUp);
+        window.removeEventListener('pointercancel', this._laUp);
+        this._drag = null;
+        this._posSave();
+      };
+      sr0.addEventListener('pointerdown', (e) => {
+        if (!this._la) return;
+        const g = e.target.closest ? e.target.closest('g.node') : null;
+        if (!g || !g.id || g.id.indexOf('g_') !== 0) return;
+        e.stopPropagation();
+        e.preventDefault();
+        const p = pt(e);
+        if (!p) return;
+        const key = g.id.slice(2);
+        const cur = (this._pos && this._pos[key]) || {};
+        this._pos = this._pos || {};
+        this._drag = { key, sx: p[0], sy: p[1], ox: Number(cur.x) || 0, oy: Number(cur.y) || 0 };
+        window.addEventListener('pointermove', this._laMv);
+        window.addEventListener('pointerup', this._laUp);
+        window.addEventListener('pointercancel', this._laUp);
+      }, true);
+      sr0.addEventListener('input', (e) => {
+        const t = e.target;
+        if (!t || !t.classList || !t.classList.contains('tts')) return;
+        const back = Math.max(0, Number(t.max) - Number(t.value));
+        const lb = sr0.querySelector('.ttl');
+        if (lb) lb.textContent = this._ttLabel(back);
+        this._ttGo(back);
+      });
+      sr0.addEventListener('click', (e) => {
+        const b = e.target.closest ? e.target.closest('[data-act]') : null;
+        if (b) {
+          e.stopPropagation();
+          const a = b.getAttribute('data-act');
+          if (a === 'la') {
+            this._la = !this._la;
+            this._laTxt = false;
+          } else if (a === 'tt') {
+            this._ttOn = !this._ttOn;
+            this._ttMin = 0;
+            this._ttSeq = (this._ttSeq || 0) + 1;
+            if (!this._ttOn) {
+              this._ttOver = null;
+              if (this._realHass) this._hass = this._realHass;
+            }
+          } else if (a === 'ttnow') {
+            this._ttMin = 0;
+            this._ttSeq = (this._ttSeq || 0) + 1;
+            this._ttOver = null;
+            if (this._realHass) this._hass = this._realHass;
+          } else if (a === 'ladone') {
+            this._la = false;
+            this._laTxt = false;
+          } else if (a === 'lareset') {
+            this._posSave(true);
+            this._applyCfg();
+          } else if (a === 'lacopy') {
+            this._laTxt = true;
+            try { navigator.clipboard.writeText(this._laYamlText()); } catch (er) { /* Textfeld zum Kopieren wird angezeigt */ }
+          }
+          this._render();
+        } else if (this._la && e.target.closest && e.target.closest('g.node')) {
+          e.stopPropagation();
+        }
+      }, true);
+    }
     const fsb = this.shadowRoot.querySelector('.fsbtn');
     if (fsb) fsb.addEventListener('click', () => this._toggleFs());
     // Antippen: \u00f6ffnet den Verlauf (more-info) des passenden Sensors
@@ -1264,7 +2134,7 @@ class FlowCardVAW extends HTMLElement {
   }
 
   _esc(t) {
-    return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return vawEsc(t);
   }
 
   // ---- Status (Garagentor, Fenster, T\u00fcren) ----
@@ -1276,7 +2146,22 @@ class FlowCardVAW extends HTMLElement {
     if (e.startsWith('lock.')) return 'lock';
     if (dc === 'garage_door' || dc === 'garage') return 'garage';
     if (dc === 'window') return 'window';
+    if (dc === 'smoke') return 'smoke';
+    if (dc === 'gas') return 'gas';
+    if (dc === 'carbon_monoxide') return 'co';
+    if (dc === 'moisture') return 'water';
+    if (dc === 'problem' || dc === 'safety' || dc === 'tamper') return 'problem';
+    if (dc === 'motion') return 'motion';
+    if (dc === 'occupancy' || dc === 'presence') return 'presence';
+    if (dc === 'temperature') return 'temperature';
+    if (dc === 'humidity') return 'humidity';
     return 'door';
+  }
+
+  // Farben einer Status-Gruppe: [ok/normal, aktiv/offen/Warnung, Alarm]
+  _stCols(o) {
+    const M = ST_META[this._stKind(o)] || {};
+    return { alert: o.alert_color || '#e53935', open: o.open_color || o.warn_color || (M.act ? '#fbc02d' : '#fb8c00'), closed: o.closed_color || (M.num ? '#29b6f6' : M.act ? '#9e9e9e' : '#43a047') };
   }
 
   _stEnt(o, ent) {
@@ -1285,11 +2170,40 @@ class FlowCardVAW extends HTMLElement {
     const nm0 = ent.name || (st && st.attributes.friendly_name) || ent.entity;
     if (!st || st.state === 'unavailable' || st.state === 'unknown') return { known: false, open: false, alert: false, label: '\u2013', cls: 'unknown', col: '#888', name: nm0 };
     const v = String(st.state);
+    const kind = this._stKind(o);
+    const M = ST_META[kind] || null;
+    const ic = ST_ICONS[kind] || ST_ICONS.door;
+    const C = this._stCols(o);
     // Zustandstexte erkennen (englisch und deutsch, z. B. Template-/ESPHome-Sensoren: "Ge\u00f6ffnet", "\u00d6ffnet", "Schlie\u00dft", "Geschlossen")
     const vl = v.trim().toLowerCase();
     const lst = (a) => (Array.isArray(a) ? a : a ? [a] : []).map((x) => String(x).trim().toLowerCase());
-    const W_OPEN = ['on', 'open', 'opened', 'true', 'unlocked', 'tilted', 'offen', 'ge\u00f6ffnet', 'geoeffnet', 'aufgesperrt', 'entriegelt', 'gekippt', 'auf'];
-    const W_CLOSED = ['off', 'closed', 'false', 'locked', 'zu', 'geschlossen', 'zugesperrt', 'zugesperrt', 'abgesperrt', 'verriegelt'];
+    // Messwerte (Temperatur, Luftfeuchtigkeit, beliebiger Sensor): Wert anzeigen, Schwellen warn_*/alert_* je Sensor oder je Gruppe
+    if (M && M.num) {
+      const T = (k) => (ent[k] !== undefined ? ent[k] : o[k]);
+      const has = (x) => x !== undefined && x !== null && x !== '' && !isNaN(Number(x));
+      const n = Number(v.replace(',', '.'));
+      const isNum = v.trim() !== '' && !isNaN(n);
+      const at = st.attributes || {};
+      const unit = at.unit_of_measurement !== undefined ? at.unit_of_measurement : M.u || '';
+      let level = 0;
+      let txt = v;
+      if (isNum) {
+        let dec = has(T('decimals')) ? Number(T('decimals')) : M.dec !== undefined ? M.dec : Number.isInteger(n) ? 0 : 1;
+        dec = Math.max(0, Math.min(6, dec));
+        txt = n.toFixed(dec);
+        if ((has(T('alert_above')) && n > Number(T('alert_above'))) || (has(T('alert_below')) && n < Number(T('alert_below')))) level = 2;
+        else if ((has(T('warn_above')) && n > Number(T('warn_above'))) || (has(T('warn_below')) && n < Number(T('warn_below')))) level = 1;
+      } else if (lst(T('alert_states')).includes(vl0(v))) level = 2;
+      else if (lst(T('warn_states')).includes(vl0(v))) level = 1;
+      const short = txt + (isNum && unit ? unit : '');
+      const label = isNum && unit ? txt + ' ' + unit : txt;
+      const cls = level === 2 ? 'alert' : level === 1 ? 'open' : 'closed';
+      const col = level === 2 ? C.alert : level === 1 ? C.open : C.closed;
+      const icon = ent.icon || o.icon || (kind === 'sensor' && at.icon) || ic[0];
+      return { known: true, open: level > 0, alert: level === 2, num: true, label, short, cls, col, name: nm0, icon };
+    }
+    const W_OPEN = ['on', 'open', 'opened', 'true', 'unlocked', 'tilted', 'offen', 'ge\u00f6ffnet', 'geoeffnet', 'aufgesperrt', 'entriegelt', 'gekippt', 'auf', 'detected', 'alarm', 'wet', 'nass', 'rauch', 'problem', 'triggered', 'ausgel\u00f6st', 'motion', 'bewegung', 'occupied', 'belegt', 'anwesend', 'home', 'an', 'ein'];
+    const W_CLOSED = ['off', 'closed', 'false', 'locked', 'zu', 'geschlossen', 'zugesperrt', 'zugesperrt', 'abgesperrt', 'verriegelt', 'clear', 'ok', 'dry', 'trocken', 'normal', 'idle', 'not_home', 'away', 'abwesend', 'frei', 'ruhig', 'aus', 'kein alarm'];
     const W_OPENING = ['opening', '\u00f6ffnet', 'oeffnet', '\u00f6ffnen', 'wird ge\u00f6ffnet', '\u00f6ffnend', 'aufgehend'];
     const W_CLOSING = ['closing', 'schlie\u00dft', 'schliesst', 'schlie\u00dfen', 'wird geschlossen', 'schlie\u00dfend'];
     const oS = lst(o.open_states);
@@ -1304,17 +2218,18 @@ class FlowCardVAW extends HTMLElement {
     else if (W_CLOSED.includes(vl)) open = false;
     else open = dom === 'cover' ? vl !== 'closed' : dom === 'lock' ? vl !== 'locked' : true; // unbekannter Text: lieber als "nicht zu" melden
     if (o.invert) open = !open;
-    let label = open ? 'offen' : 'zu';
+    let label = M && M.w ? M.w[open ? 1 : 0] : open ? 'offen' : 'zu';
     if (moving) label = moving;
     if (dom === 'lock' && v === 'jammed') label = 'klemmt';
     if (open && o.open_text) label = o.open_text;
     if (!open && o.closed_text) label = o.closed_text;
     const secs = open && st.last_changed ? (Date.now() - new Date(st.last_changed).getTime()) / 1000 : 0;
     const mins = secs / 60;
-    const alert = open && o.warn_after !== undefined && secs >= Number(o.warn_after);
+    const alert = open && (o.warn_after !== undefined ? secs >= Number(o.warn_after) : !!(M && M.alarm));
     const cls = alert ? 'alert' : open ? 'open' : 'closed';
-    const col = alert ? o.alert_color || '#e53935' : open ? o.open_color || '#fb8c00' : o.closed_color || '#43a047';
-    return { known: true, open, alert, label, mins, secs, cls, col, name: nm0 };
+    const col = alert ? C.alert : open ? C.open : C.closed;
+    const icon = ent.icon || (open ? o.icon_open || o.icon || ic[1] : o.icon || ic[0]);
+    return { known: true, open, alert, label, mins, secs, cls, col, name: nm0, icon };
   }
 
   _stEval(o) {
@@ -1323,14 +2238,19 @@ class FlowCardVAW extends HTMLElement {
     const open = ents.filter((x) => x.open).length;
     const alert = ents.some((x) => x.alert);
     const known = ents.some((x) => x.known);
-    const ic = ST_ICONS[this._stKind(o)] || ST_ICONS.door;
+    const kind = this._stKind(o);
+    const M = ST_META[kind] || null;
+    const ic = ST_ICONS[kind] || ST_ICONS.door;
+    const C = this._stCols(o);
     const cls = !known ? 'unknown' : alert ? 'alert' : open ? 'open' : 'closed';
-    const col = cls === 'unknown' ? '#888' : alert ? o.alert_color || '#e53935' : open ? o.open_color || '#fb8c00' : o.closed_color || '#43a047';
-    const icon = open ? o.icon_open || o.icon || ic[1] : o.icon || ic[0];
+    const col = cls === 'unknown' ? '#888' : alert ? C.alert : open ? C.open : C.closed;
+    const icon = n === 1 && ents[0].icon ? ents[0].icon : M && M.num ? o.icon || ic[0] : open ? o.icon_open || o.icon || ic[1] : o.icon || ic[0];
     const nm = o.name || (n === 1 ? ents[0].name : '');
     let text;
     if (!known) text = nm + ' \u2013';
+    else if (M && M.num) text = n === 1 ? nm + ' ' + ents[0].label : nm + ': ' + ents.map((x) => x.label).join(' / ');
     else if (n === 1) text = nm + ' ' + ents[0].label + (ents[0].open && ents[0].secs >= 1 && !(ents[0].label === '\u00f6ffnet' || ents[0].label === 'schlie\u00dft') ? ' \u00b7 ' + (ents[0].secs < 60 ? Math.floor(ents[0].secs) + ' s' : this._fmtDur(ents[0].secs / 3600)) : '');
+    else if (M && M.w) text = open ? `${nm}: ${open} von ${n} ${M.w[1]}` : `${nm} ${M.w[0]}`;
     else text = open ? `${nm}: ${open} von ${n} offen` : `${nm} zu`;
     return { ents, n, open, alert, known, cls, col, icon, text };
   }
@@ -1459,9 +2379,150 @@ class FlowCardVAW extends HTMLElement {
       .join(' \u00b7 ');
   }
 
+  // Verlauf der letzten Stunden (Sparkline) aus der Home-Assistant-Historie holen, h\u00f6chstens alle 10 Minuten
+  _sparkMaybe() {
+    const h = this._hass;
+    if (!h || typeof h.callWS !== 'function' || !this._nodes || this._spBusy) return;
+    const ids = [...new Set(this._nodes.flatMap((n) => (n.spE || []).map((x) => x.e)))];
+    if (!ids.length) return;
+    const now = Date.now();
+    const missing = ids.some((id) => !this._spark || !this._spark[id]);
+    if (!missing && this._spT && now - this._spT < 600000) return;
+    if (this._spT && now - this._spT < 60000) return;
+    const hrs = this._sparkHours();
+    this._spBusy = true;
+    this._spT = now;
+    const t0 = now - hrs * 3600000;
+    h.callWS({ type: 'history/history_during_period', start_time: new Date(t0).toISOString(), end_time: new Date(now).toISOString(), entity_ids: ids, include_start_time_state: true, significant_changes_only: false, minimal_response: true, no_attributes: true })
+      .then((res) => {
+        const out = {};
+        ids.forEach((id) => {
+          const pts = [];
+          ((res && res[id]) || []).forEach((it) => {
+            const v = parseFloat(it.s !== undefined ? it.s : it.state);
+            const ts = it.lu !== undefined ? it.lu * 1000 : it.lc !== undefined ? it.lc * 1000 : Date.parse(it.last_updated || it.last_changed || '');
+            if (!isNaN(v)) pts.push([isNaN(ts) ? t0 : ts, v]);
+          });
+          out[id] = pts;
+        });
+        this._spark = out;
+        this._spBusy = false;
+        this._spT = Date.now();
+        this._spDirty = true;
+        this._drawSpark();
+      })
+      .catch(() => {
+        this._spBusy = false;
+      });
+  }
+
+  // Text setzen; bei gleicher Struktur (z. B. "3.20 kW" -> "3.45 kW") laufen die Zahlen sanft zum neuen Wert
+  _setTxt(e, txt) {
+    if (!e) return;
+    const old = e.textContent;
+    txt = String(txt);
+    if (txt === old) return;
+    const OPT = this._o || {};
+    if (!OPT.numAnim || typeof requestAnimationFrame === 'undefined' || (this._c && this._c.calm && this.shadowRoot.querySelector('ha-card.calm')) || (typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches)) {
+      e.textContent = txt;
+      return;
+    }
+    const re = /-?\d+(?:[.,]\d+)?/g;
+    const a = old.match(re);
+    const b = txt.match(re);
+    if (!a || !b || a.length !== b.length || old.replace(re, '#') !== txt.replace(re, '#')) {
+      e.textContent = txt;
+      return;
+    }
+    if (e._vt) cancelAnimationFrame(e._vt);
+    const num = (x) => parseFloat(x.replace(',', '.'));
+    const A = a.map(num);
+    const B = b.map(num);
+    const dec = b.map((x) => (x.split(/[.,]/)[1] || '').length);
+    const comma = b.map((x) => x.indexOf(',') >= 0);
+    const parts = txt.split(re);
+    const t0 = performance.now();
+    const dur = 600;
+    const step = (now) => {
+      const p = Math.min(1, (now - t0) / dur);
+      const k = 1 - Math.pow(1 - p, 3);
+      let out = parts[0];
+      for (let i = 0; i < B.length; i++) {
+        let v = (A[i] + (B[i] - A[i]) * k).toFixed(dec[i]);
+        if (comma[i]) v = v.replace('.', ',');
+        out += v + parts[i + 1];
+      }
+      e.textContent = p >= 1 ? txt : out;
+      e._vt = p >= 1 ? 0 : requestAnimationFrame(step);
+    };
+    e._vt = requestAnimationFrame(step);
+    // falls der Tab im Hintergrund l\u00e4uft (keine Frames): Endwert sicher setzen
+    setTimeout(() => {
+      if (e.textContent !== txt && e.isConnected && e._vt) {
+        cancelAnimationFrame(e._vt);
+        e._vt = 0;
+        e.textContent = txt;
+      }
+    }, dur + 900);
+  }
+
+  _sparkHours() {
+    const v = Number(this._c && this._c.sparkline_hours);
+    return !isNaN(v) && v >= 1 ? Math.min(48, v) : 6;
+  }
+
+  _drawSpark() {
+    const sr = this.shadowRoot;
+    if (!sr || !this._nodes || !this._spark) return;
+    const N = 48;
+    const t1 = Date.now();
+    const t0 = t1 - this._sparkHours() * 3600000;
+    for (const n of this._nodes) {
+      if (!n.spE || !n.spG) continue;
+      const a = sr.querySelector('#spk_' + n.key + ' .spa');
+      const l = sr.querySelector('#spk_' + n.key + ' .spl');
+      if (!a || !l) continue;
+      const ser = new Array(N).fill(0);
+      let any = false;
+      n.spE.forEach((x) => {
+        const pts = this._spark[x.e];
+        if (!pts || !pts.length) return;
+        any = true;
+        const stt = this._hass && this._hass.states[x.e];
+        const u = stt && stt.attributes ? String(stt.attributes.unit_of_measurement || '') : '';
+        const k = (u === 'kW' ? 1000 : u === 'MW' ? 1000000 : 1) * x.s;
+        let j = 0;
+        for (let i = 0; i < N; i++) {
+          const ti = t0 + ((t1 - t0) * i) / (N - 1);
+          while (j + 1 < pts.length && pts[j + 1][0] <= ti) j++;
+          ser[i] += k * pts[j][1];
+        }
+      });
+      if (!any) {
+        a.setAttribute('d', '');
+        l.setAttribute('d', '');
+        continue;
+      }
+      const G = n.spG;
+      const mn = Math.min(...ser);
+      const mx = Math.max(...ser);
+      const rg = mx - mn;
+      const pt = ser.map((v, i) => [G.x + (G.w * i) / (N - 1), rg < 1e-9 ? G.y + G.h / 2 : G.y + G.h - ((v - mn) / rg) * G.h]);
+      const d = pt.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
+      l.setAttribute('d', d);
+      a.setAttribute('d', d + ' L' + (G.x + G.w).toFixed(1) + ',' + (G.y + G.h).toFixed(1) + ' L' + G.x.toFixed(1) + ',' + (G.y + G.h).toFixed(1) + ' Z');
+    }
+  }
+
   _update() {
     if (!this._nodes || !this.shadowRoot.querySelector('svg')) return;
     const sr = this.shadowRoot;
+    if (this._isNight() !== this._bgNight || this._wxKey() !== this._wxShown || (this._rbOn && Date.now() > this._rbUntil)) this._applyBg();
+    this._sparkMaybe();
+    if (this._spDirty) {
+      this._spDirty = false;
+      this._drawSpark();
+    }
     const hd = sr.querySelector('.hd');
     if (hd) hd.textContent = this._clock(this._c.date, 'date');
     const ht = sr.querySelector('.ht');
@@ -1481,11 +2542,12 @@ class FlowCardVAW extends HTMLElement {
     const hs = sr.querySelector('.hs');
     if (hs) {
       const html = (this._st || [])
-        .map((o, i) => (o.show.includes('header') ? `<span class="sp ${stEv[i].cls}" data-st="${i}:-1" style="--sc:${stEv[i].col}"><ha-icon icon="${stEv[i].icon}"></ha-icon>${this._esc(stEv[i].text)}${this._stSwEnt(o, -1) ? `<span class="spw" data-stsw="${i}" title="Schalten"><ha-icon icon="mdi:power"></ha-icon></span>` : ''}</span>` : ''))
+        .map((o, i) => (o.show.includes('header') ? `<span class="sp ${stEv[i].cls}" data-st="${i}:-1" style="--sc:${vawEsc(stEv[i].col)}"><ha-icon icon="${vawEsc(stEv[i].icon)}"></ha-icon>${this._esc(stEv[i].text)}${this._stSwEnt(o, -1) ? `<span class="spw" data-stsw="${i}" title="Schalten"><ha-icon icon="mdi:power"></ha-icon></span>` : ''}</span>` : ''))
         .join('');
       if (html !== this._hsHtml) {
         this._hsHtml = html;
         hs.innerHTML = html;
+        this._iconFix(hs);
       }
     }
     (this._stCirc || []).forEach((q) => {
@@ -1503,13 +2565,15 @@ class FlowCardVAW extends HTMLElement {
       g.classList.toggle('alert', x.cls === 'alert');
       k.setAttribute('stroke', x.col);
       k.setAttribute('stroke-opacity', x.cls === 'closed' ? '0.6' : '1');
-      t.textContent = x.label;
+      t.textContent = x.short || x.label;
+      const tl = String(x.short || x.label).length;
+      t.style.fontSize = (tl > 8 ? 7.5 : tl > 6 ? 8.5 : x.short ? 10 : 9) + 'px';
       t.style.fill = x.col;
       let nm = String(x.name);
       if (o.ents.length === 1 && o.name) nm = String(o.name);
       else if (o.name && nm.toLowerCase().startsWith(String(o.name).toLowerCase() + ' ')) nm = nm.slice(o.name.length + 1);
       nmE.textContent = nm.length > 14 ? nm.slice(0, 13) + '\u2026' : nm;
-      const icon = x.open ? o.icon_open || o.icon || ic[1] : o.icon || ic[0];
+      const icon = x.icon || (x.open ? o.icon_open || o.icon || ic[1] : o.icon || ic[0]);
       if (iE) {
         if (iE.getAttribute('icon') !== icon) iE.setAttribute('icon', icon);
         iE.style.color = x.col;
@@ -1703,7 +2767,7 @@ class FlowCardVAW extends HTMLElement {
       (n.lines || []).forEach((k, i) => {
         const e = t[i];
         if (!e) return;
-        e.textContent =
+        this._setTxt(e,
           k === 'in' ? '\u2192 ' + this._fmtP(n._in)
           : k === 'out' ? '\u2190 ' + this._fmtP(n._out)
           : k === 'p' ? this._fmtP(n._p)
@@ -1711,13 +2775,13 @@ class FlowCardVAW extends HTMLElement {
           : k === 'v' ? vTxt
           : k === 't' ? this._temp(n.cfg.temperature)
           : k === 'f' ? this._freq(n.cfg.frequency)
-          : this._extra(n.cfg.extra[Number(k.slice(1))]);
+          : this._extra(n.cfg.extra[Number(k.slice(1))]));
         if (k === 'a' || k === 'v' || k === 'f') e.classList.toggle('lim', !!(k === 'a' ? hit.i : k === 'v' ? hit.v : hit.f));
       });
       if (n.key === 'battery') {
         const soc = this._num(n.cfg.soc, 'x');
         const el = sr.getElementById('soc_battery');
-        if (el) el.textContent = soc === null ? '\u2013 %' : `${Math.round(soc)} %`;
+        if (el) this._setTxt(el, soc === null ? '\u2013 %' : `${Math.round(soc)} %`);
         // Icon passend zum Ladestand
         const bi = sr.getElementById('i_battery');
         if (bi && n.cfg.soc_icon !== false && !(this._c.battery && this._c.battery.icon) && socAll !== null) {
@@ -1751,6 +2815,20 @@ class FlowCardVAW extends HTMLElement {
           cg.setAttribute('opacity', f < 0.005 ? '0' : '1');
         }
       }
+      const fv = sr.getElementById('fv_' + n.key);
+      if (fv) {
+        let fr = null;
+        if (n.key === 'battery') {
+          if (socAll !== null) fr = socAll / 100;
+        } else {
+          let mx = this._solMax;
+          if (mx !== null && mx !== undefined && isNaN(Number(mx))) mx = this._num(mx, 'p');
+          mx = Number(mx);
+          if (n._p !== null && n._p !== undefined && mx > 0) fr = Math.abs(n._p) / mx;
+        }
+        fv.style.transform = 'scaleY(' + (fr === null ? 0 : Math.max(0, Math.min(1, fr)).toFixed(3)) + ')';
+        if (n.key === 'battery' && socAll !== null) fv.setAttribute('fill', this._socCol(socAll));
+      }
       const sec = sr.getElementById('sec_' + n.key);
       if (sec) sec.textContent = n.cfg.secondary ? this._secText(n.cfg.secondary) : '';
     }
@@ -1765,7 +2843,7 @@ class FlowCardVAW extends HTMLElement {
       }
       const put = (q, txt) => {
         const e = sr.getElementById('k' + q + '_' + x.k.id);
-        if (e) e.textContent = txt;
+        if (e) this._setTxt(e, txt);
       };
       put('p', this._fmtK(x.p));
       put('s', x.s === null ? '\u2013 %' : Math.round(x.s) + ' %');
@@ -1860,7 +2938,7 @@ class FlowCardVAW extends HTMLElement {
       }
       const put = (q, txt) => {
         const e = sr.getElementById('k' + q + '_peak_c0');
-        if (e) e.textContent = txt;
+        if (e) this._setTxt(e, txt);
       };
       put('m', this._kw(mx, true));
       put('l', 'jetzt ' + this._kw(lv));
@@ -1870,43 +2948,88 @@ class FlowCardVAW extends HTMLElement {
     // ---- Punkte auf den Linien ----
     for (const l of this._links) {
       const f = flow[l.id];
-      const dot = sr.getElementById('dot_' + l.id);
-      const am = sr.getElementById('am_' + l.id);
       const path = sr.getElementById('l_' + l.id);
-      if (!dot || f === null || f === undefined || Math.abs(f) < 1) {
-        if (dot) dot.setAttribute('visibility', 'hidden');
+      if (l._ll) {
+        const lt = sr.getElementById('ll_' + l.id);
+        if (lt) {
+          if (f === null || f === undefined || Math.abs(f) < 1) lt.setAttribute('visibility', 'hidden');
+          else {
+            lt.setAttribute('visibility', 'visible');
+            const tx = this._kw(Math.abs(f), true);
+            if (lt.textContent !== tx) lt.textContent = tx;
+          }
+        }
+      }
+      const D = [];
+      for (let i = 0; i < OPT.ndot; i++) {
+        const sf = i ? '_' + i : '';
+        const d = sr.getElementById('dot_' + l.id + sf);
+        if (d) D.push({ d, am: sr.getElementById('am_' + l.id + sf) });
+      }
+      if (!D.length || f === null || f === undefined || Math.abs(f) < 1) {
+        D.forEach((x) => x.d.setAttribute('visibility', 'hidden'));
         if (path) {
+          path.classList.remove('on', 'rev');
           path.setAttribute('stroke', l.ca);
           path.setAttribute('opacity', '0.3');
           path.setAttribute('stroke-width', '2');
         }
         continue;
       }
-      dot.setAttribute('visibility', calmDots === 'off' ? 'hidden' : 'visible');
-      if (OPT.lineW) {
-        const lw = 2 + (OPT.lineMax - 2) * this._lx(Math.abs(f));
-        if (path) path.setAttribute('stroke-width', lw.toFixed(1));
-        dot.setAttribute('r', (3 + lw * 0.75).toFixed(1));
-      }
+      const af = Math.abs(f);
+      const cnt = OPT.dotsAuto ? (af < 300 ? 1 : af < 1500 ? 2 : 3) : OPT.ndot;
+      const lw = OPT.lineW ? 2 + (OPT.lineMax - 2) * this._lx(af) : 0;
+      if (OPT.lineW && path) path.setAttribute('stroke-width', lw.toFixed(1));
       const src = f >= 0 ? l.a : l.b;
       const dst = f >= 0 ? l.b : l.a;
-      let col = src._dc || (f >= 0 ? l.ca : l.cb);
+      const cs = src._dc || (f >= 0 ? l.ca : l.cb);
+      const cd = dst._dc || (f >= 0 ? l.cb : l.ca);
+      const gs = src._dc || src.cfg.line_color || src.cfg.color || cs;
+      const gd = dst._dc || dst.cfg.line_color || dst.cfg.color || cd;
+      let col = cs;
       // Flie\u00dft etwas ins Netz (Einspeisung), hat die Linie die Netzfarbe
       if (dst.key === 'grid' && src.key !== 'grid') col = dst._dc || (f >= 0 ? l.cb : l.ca);
-      dot.setAttribute('fill', col);
+      const dur = (this._dur(af) * (calmDots === 'slow' ? 3 : 1)).toFixed(1) + 's';
+      D.forEach((x, i) => {
+        const show = i < cnt && calmDots !== 'off';
+        x.d.setAttribute('visibility', show ? 'visible' : 'hidden');
+        if (!show) return;
+        if (OPT.lineW && l._mk !== 'spark' && l._mk !== 'drop') {
+          if (l._mk === 'dot') x.d.setAttribute('r', (3 + lw * 0.75).toFixed(1));
+          else x.d.setAttribute('d', vawMk(l._mk, 3.2 + lw * 0.8));
+        }
+        x.d.setAttribute('fill', col);
+        x.am.setAttribute('dur', dur);
+        const ph = i / cnt;
+        const q = (1 - ph).toFixed(3);
+        const kp = ph === 0 ? (f >= 0 ? '0;1' : '1;0') : f >= 0 ? `${ph.toFixed(3)};1;0;${ph.toFixed(3)}` : `${q};0;1;${q}`;
+        const kt = ph === 0 ? '0;1' : `0;${q};${q};1`;
+        if (x.am.getAttribute('keyPoints') !== kp) x.am.setAttribute('keyPoints', kp);
+        if (x.am.getAttribute('keyTimes') !== kt) x.am.setAttribute('keyTimes', kt);
+        if (l._mk !== 'dot') x.am.setAttribute('rotate', f >= 0 ? 'auto' : 'auto-reverse');
+      });
       if (path) {
-        path.setAttribute('stroke', col);
+        if (OPT.lgrad) {
+          const g0 = sr.getElementById('lgs0_' + l.id);
+          const g1 = sr.getElementById('lgs1_' + l.id);
+          if (g0 && g1) {
+            g0.style.stopColor = f >= 0 ? gs : gd;
+            g1.style.stopColor = f >= 0 ? gd : gs;
+          }
+          path.setAttribute('stroke', 'url(#lg_' + l.id + ')');
+        } else path.setAttribute('stroke', col);
         path.setAttribute('opacity', '0.9');
+        path.style.color = col;
+        path.classList.add('on');
+        path.classList.toggle('rev', f < 0);
       }
-      am.setAttribute('dur', (this._dur(Math.abs(f)) * (calmDots === 'slow' ? 3 : 1)).toFixed(1) + 's');
-      am.setAttribute('keyPoints', f >= 0 ? '0;1' : '1;0');
     }
 
     // ---- Infozeile unter der Karte ----
     const infoEl = sr.querySelector('.info');
     if (infoEl) {
       const I = this._c.info && typeof this._c.info === 'object' ? this._c.info : {};
-      const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const esc = vawEsc;
       const pct = (x) => Math.round(Math.max(0, Math.min(100, x))) + ' %';
       const chips = [];
       if (I.autarky) chips.push({ ic: 'mdi:home-lightning-bolt', t: 'Autarkie ' + (H > 0 ? pct(100 * (1 - Gi / H)) : '\u2013') });
@@ -1929,6 +3052,20 @@ class FlowCardVAW extends HTMLElement {
         }
         chips.push({ ic: 'mdi:battery-clock', t });
       }
+      const co2e = I.co2_entity || (typeof I.co2 === 'string' ? I.co2 : I.co2 && I.co2.entity);
+      if (co2e) {
+        const cst = this._hass && this._hass.states[co2e];
+        const fac = Number(I.co2_factor !== undefined ? I.co2_factor : I.co2 && I.co2.factor !== undefined ? I.co2.factor : 0.2);
+        let tx = '\u2013';
+        if (cst && cst.state !== 'unknown' && cst.state !== 'unavailable' && !isNaN(parseFloat(cst.state))) {
+          const u = String((cst.attributes && cst.attributes.unit_of_measurement) || 'kWh');
+          const kwh = parseFloat(cst.state) * (u === 'Wh' ? 0.001 : u === 'MWh' ? 1000 : 1);
+          const kg = kwh * (isNaN(fac) ? 0.2 : fac);
+          const lang = (this._hass.locale && this._hass.locale.language) || undefined;
+          tx = kg >= 1000 ? (kg / 1000).toLocaleString(lang, { maximumFractionDigits: 2 }) + ' t' : kg.toLocaleString(lang, { maximumFractionDigits: kg < 10 ? 1 : 0 }) + ' kg';
+        }
+        chips.push({ ic: 'mdi:leaf', e: co2e, t: (I.co2_name || 'CO\u2082 gespart') + ' ' + tx });
+      }
       (this._st || []).forEach((o, i) => {
         if (o.show.includes('info')) chips.push({ dot: stEv[i].col, st: i + ':-1', t: stEv[i].text, sw: this._stSwEnt(o, -1) ? i : null });
       });
@@ -1942,11 +3079,12 @@ class FlowCardVAW extends HTMLElement {
         chips.push({ ic: o.icon, e: o.entity, t: this._extra(o) });
       });
       const html = chips
-        .map((q) => `<span class="chip"${q.e ? ` data-e="${esc(q.e)}"` : ''}${q.st ? ` data-st="${q.st}" data-e="x"` : ''}>${q.dot ? `<span class="dot" style="background:${q.dot}"></span>` : q.ic ? `<ha-icon icon="${esc(q.ic)}"></ha-icon>` : ''}${esc(q.t)}${q.sw !== null && q.sw !== undefined ? `<span class="spw" data-stsw="${q.sw}" title="Schalten"><ha-icon icon="mdi:power"></ha-icon></span>` : ''}</span>`)
+        .map((q) => `<span class="chip"${q.e ? ` data-e="${esc(q.e)}"` : ''}${q.st ? ` data-st="${q.st}" data-e="x"` : ''}>${q.dot ? `<span class="dot" style="background:${vawEsc(q.dot)}"></span>` : q.ic ? `<ha-icon icon="${esc(q.ic)}"></ha-icon>` : ''}${esc(q.t)}${q.sw !== null && q.sw !== undefined ? `<span class="spw" data-stsw="${q.sw}" title="Schalten"><ha-icon icon="mdi:power"></ha-icon></span>` : ''}</span>`)
         .join('');
       if (html !== this._infoHtml) {
         this._infoHtml = html;
         infoEl.innerHTML = html;
+        this._iconFix(infoEl);
       }
     }
   }
@@ -1967,6 +3105,7 @@ const vEnt = { entity: {} };
 const vMeasure = () => [vG(vE('current', 'Strom (A)'), vE('voltage', 'Spannung (V)')), vG(vE('temperature', 'Temperatur (\u00b0C)'), vN('current_max', 'Strom-Grenze (A)', 'Rot ab hier')) ];
 const vLook = () => [
   vG(vT('name', 'Name'), vI('icon', 'Icon')),
+  vB('line_label', 'Wert an der Linie zu diesem Kreis anzeigen'),
   vG(vT('color', 'Farbe', 'Farbcode, z. B. #ff9800'), vT('line_color', 'Linienfarbe'), vT('icon_color', 'Icon-Farbe'), vT('text_color', 'Zahlenfarbe')),
 ];
 // Felder f\u00fcr Listeneintr\u00e4ge (Ger\u00e4te, Zonen, Phasen, Panels, Batterien)
@@ -1986,7 +3125,9 @@ const vDevFields = {
   switch_confirm: vF('Vor dem Schalten nachfragen', { boolean: {} }),
   current_max: vF('Strom-Grenze (A)', { number: { mode: 'box', min: 0 } }),
   name: vF('Name', vText),
-  icon: vF('Icon', { icon: {} }),
+  icon: vF('Icon (mdi:..., my:name oder Bild-URL)', { icon: {} }),
+  line_label: vF('Wert an der Linie anzeigen', { boolean: {} }),
+  no_link: vF('Ohne Verbindungslinie (steht allein, keine Linie zum Haus bzw. zur Zone)', { boolean: {} }),
   power: vF('Leistung (W)', vEnt),
   current: vF('Strom (A)', vEnt),
   voltage: vF('Spannung (V)', vEnt),
@@ -2028,12 +3169,23 @@ const vBatFields = {
 };
 const vStatusFields = {
   name: vF('Name (z. B. Garagentor, Fenster)', vText),
-  entity: vF('Sensor (ein Tor, Fenster oder eine T\u00fcr)', vEnt),
-  entities: vF('Mehrere Sensoren (z. B. alle Fenster)', { entity: { multiple: true } }),
+  entity: vF('Sensor / Entit\u00e4t (Tor, Fenster, Rauchmelder, Temperatur ...)', vEnt),
+  entities: vF('Mehrere Sensoren (z. B. alle Fenster oder alle Rauchmelder)', { entity: { multiple: true } }),
   show: vF('Wo anzeigen (leer = Kopfzeile)', { select: { multiple: true, mode: 'list', options: [{ value: 'header', label: 'Kopfzeile' }, { value: 'info', label: 'Infozeile' }, { value: 'circles', label: 'Kreise unten (einer pro Sensor)' }] } }),
   at: vF('Abzeichen am Kreis mit diesem Namen (z. B. Garage / Keller)', vText),
-  kind: vF('Art (leer = automatisch)', { select: { mode: 'dropdown', options: [{ value: 'garage', label: 'Garagentor' }, { value: 'window', label: 'Fenster' }, { value: 'door', label: 'T\u00fcr' }, { value: 'lock', label: 'Schloss' }] } }),
-  warn_after: vF('Rot und blinkend nach (Sekunden offen)', { number: { mode: 'box', min: 1 } }),
+  kind: vF('Art (leer = automatisch)', { select: { mode: 'dropdown', options: [{ value: 'garage', label: 'Garagentor' }, { value: 'window', label: 'Fenster' }, { value: 'door', label: 'T\u00fcr' }, { value: 'lock', label: 'Schloss' }, { value: 'smoke', label: 'Rauchmelder' }, { value: 'gas', label: 'Gasmelder' }, { value: 'co', label: 'CO-Melder' }, { value: 'water', label: 'Wassermelder' }, { value: 'problem', label: 'St\u00f6rung / Problem' }, { value: 'motion', label: 'Bewegung' }, { value: 'presence', label: 'Anwesenheit' }, { value: 'light', label: 'Licht' }, { value: 'switch', label: 'Schalter / Steckdose' }, { value: 'temperature', label: 'Temperatur' }, { value: 'humidity', label: 'Luftfeuchtigkeit' }, { value: 'sensor', label: 'Beliebiger Messwert oder Text' }] } }),
+  icon: vF('Symbol (leer = passend zur Art)', { icon: {} }),
+  icon_open: vF('Symbol im Zustand \u201eoffen/aktiv\u201c (optional)', { icon: {} }),
+  open_text: vF('Text bei offen/aktiv (statt \u201eoffen\u201c, \u201eAlarm\u201c ...)', vText),
+  closed_text: vF('Text bei zu/normal (statt \u201ezu\u201c, \u201eOK\u201c ...)', vText),
+  decimals: vF('Nachkommastellen (Messwerte)', { number: { mode: 'box', min: 0, max: 6 } }),
+  warn_above: vF('Messwert: Warnung (orange) \u00fcber', { number: { mode: 'box' } }),
+  warn_below: vF('Messwert: Warnung (orange) unter', { number: { mode: 'box' } }),
+  alert_above: vF('Messwert: Alarm (rot, blinkend) \u00fcber', { number: { mode: 'box' } }),
+  alert_below: vF('Messwert: Alarm (rot, blinkend) unter', { number: { mode: 'box' } }),
+  warn_states: vF('Text-Zust\u00e4nde mit Warnung (orange), mehrere m\u00f6glich', { text: { multiple: true } }),
+  alert_states: vF('Text-Zust\u00e4nde mit Alarm (rot), mehrere m\u00f6glich', { text: { multiple: true } }),
+  warn_after: vF('Rot und blinkend nach (Sekunden offen; bei Rauchmelder usw. sofort)', { number: { mode: 'box', min: 1 } }),
   hide_closed: vF('Abzeichen nur zeigen, wenn offen', { boolean: {} }),
   invert: vF('Sensor \u201ean\u201c bedeutet zu', { boolean: {} }),
   switch: vF('Schalter-Knopf (Entit\u00e4t, z. B. cover.garagentor; bei einem Sensor derselbe)', vEnt),
@@ -2048,24 +3200,209 @@ const vList = (name, label, fields, labelField) => ({
 });
 const vZoneFields = {
   ...vDevFields,
+  frame: vF('Rahmen um Zone und Ger\u00e4te', { boolean: {} }),
   phases: vF('Phasen (kleine Kreise \u00fcber der Zone)', { object: { multiple: true, label_field: 'name', fields: vPhaseFields } }),
   devices: vF('Ger\u00e4te der Zone', { object: { multiple: true, label_field: 'name', fields: vDevFields } }),
 };
 
+const VAW_BG_OPTS = [
+  ['default', 'Standard (Design von Home Assistant)'],
+  ['transparent', 'Transparent'],
+  ['dark', 'Dunkel'],
+  ['black', 'Schwarz (OLED)'],
+  ['light', 'Hell'],
+  ['midnight', 'Mitternacht (Verlauf)'],
+  ['aurora', 'Polarlicht (Verlauf)'],
+  ['sunset', 'Abendrot (Verlauf)'],
+  ['ocean', 'Ozean (Verlauf)'],
+  ['forest', 'Wald (Verlauf)'],
+  ['grid', 'Raster'],
+  ['dots', 'Punkte'],
+  ['color', 'Eigene Farbe'],
+  ['gradient', 'Eigener Verlauf'],
+  ['image', 'Eigenes Bild'],
+];
+const VAW_THEMES = {
+  neon_night: { background: 'black', circle_style: 'neon', background_animation: 'stars' },
+  glass_aurora: { background: 'aurora', circle_style: 'glass', background_animation: 'drift' },
+  minimal_light: { background: 'light', circle_style: 'flat' },
+  hex_tech: { background: 'midnight', circle_style: 'neon', background_animation: 'drift', node_shape: 'hexagon' },
+  cozy_sunset: { background: 'sunset', circle_style: 'glass', node_shape: 'square' },
+  ocean_calm: { background: 'ocean', circle_style: 'flat', background_animation: 'drift' },
+  blueprint: { background: 'grid', circle_style: 'flat', node_shape: 'square' },
+};
+const VAW_THEME_OPTS = [['none', 'Keines'], ['neon_night', 'Neon-Nacht'], ['glass_aurora', 'Glas-Polarlicht'], ['minimal_light', 'Minimal hell'], ['hex_tech', 'Hex-Tech'], ['cozy_sunset', 'Gem\u00fctlich (Abendrot)'], ['ocean_calm', 'Ozean ruhig'], ['blueprint', 'Bauplan']];
+// Sicherheit: Werte aus der Konfiguration landen in HTML, daher immer maskieren (auch Anf\u00fchrungszeichen f\u00fcr Attribute)
+function vawEsc(t) {
+  return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Farbwerte: nur harmlose Zeichen (Namen, #hex, rgb()/hsl()/var()/Verl\u00e4ufe); alles andere wird verworfen
+function vawSafeCss(v) {
+  return typeof v === 'string' && v.length <= 300 && /^[#\w(),.%\s/+-]+$/.test(v);
+}
+
+// Konfiguration vor der Verwendung s\u00e4ubern: unsichere Farben und Icon-Angaben entfernen
+function vawClean(o, pk) {
+  if (Array.isArray(o)) return o.map((x) => vawClean(x, pk));
+  if (o && typeof o === 'object') {
+    const r = {};
+    Object.keys(o).forEach((k) => {
+      const v = o[k];
+      if (typeof v === 'string') {
+        if (/colou?r|gradient|^(fill|stroke)$/i.test(k) || (k === 'background' && v.indexOf('(') >= 0)) {
+          if (!vawSafeCss(v)) return;
+        } else if (/icon/i.test(k) || pk === 'custom_icons' || k === 'url') {
+          if (/["'<>`\\\s]/.test(v) || v.length > 500) return;
+        }
+      }
+      r[k] = vawClean(v, k);
+    });
+    return r;
+  }
+  return o;
+}
+
+// Funken: leuchtender Kopf mit flimmerndem Schweif; Tropfen: Wassertropfen mit Glanzpunkt (Farbe kommt vom umgebenden Element)
+function vawSpark(i) {
+  const d = (0.7 + 0.35 * (i % 3)).toFixed(2);
+  return '<circle r="8" opacity="0.2"><animate attributeName="r" values="6;9;6" dur="' + d + 's" repeatCount="indefinite"/></circle>'
+    + '<circle r="3.6"/><circle cx="-6" cy="1.6" r="2.4" opacity="0.65"/><circle cx="-11" cy="-1.6" r="1.8" opacity="0.4"/>'
+    + '<circle cx="-16" cy="1" r="1.2" opacity="0.22"><animate attributeName="opacity" values="0.1;0.35;0.1" dur="' + d + 's" repeatCount="indefinite"/></circle>'
+    + '<circle cx="-3" cy="-4.6" r="1" opacity="0.5"><animate attributeName="opacity" values="0;0.8;0" dur="' + d + 's" repeatCount="indefinite"/></circle>';
+}
+
+function vawDrop() {
+  return '<path d="M-9,0 C-4,-1.2 -1,-4.6 3,-4.6 C6.4,-4.6 8.4,-2.4 8.4,0 C8.4,2.4 6.4,4.6 3,4.6 C-1,4.6 -4,1.2 -9,0Z"/><circle cx="4.2" cy="-1.8" r="1.3" fill="#fff" opacity="0.55"/>';
+}
+
+function vawMk(kind, s) {
+  if (kind === 'arrow') return `M${(-s * 1.2).toFixed(1)},${(-s * 0.95).toFixed(1)} L${(s * 1.4).toFixed(1)},0 L${(-s * 1.2).toFixed(1)},${(s * 0.95).toFixed(1)} L${(-s * 0.5).toFixed(1)},0 Z`;
+  return `M0,${(-s * 1.15).toFixed(1)} L${(s * 1.15).toFixed(1)},0 L0,${(s * 1.15).toFixed(1)} L${(-s * 1.15).toFixed(1)},0 Z`;
+}
+function vawRnd(seed) {
+  let x = seed;
+  return () => {
+    x = (x * 16807) % 2147483647;
+    return x / 2147483647;
+  };
+}
+function vawSparkEnts(n) {
+  const cfg = n.cfg || {};
+  const f = (x) => (x && typeof x === 'object' ? x.entity : x);
+  const ik = n.key === 'grid' ? 'import_power' : n.key === 'battery' ? 'discharge_power' : null;
+  const ok = n.key === 'grid' ? 'export_power' : n.key === 'battery' ? 'charge_power' : null;
+  const a = ik && f(cfg[ik]);
+  const b = ok && f(cfg[ok]);
+  const out = [];
+  if (a || b) {
+    if (typeof a === 'string') out.push({ e: a, s: 1 });
+    if (typeof b === 'string') out.push({ e: b, s: -1 });
+  } else {
+    const p = f(cfg.power);
+    if (typeof p === 'string') out.push({ e: p, s: n.key === 'battery' && cfg.invert ? -1 : 1 });
+  }
+  return out;
+}
+// Formen: Kreis, abgerundetes Viereck, Sechseck. Ringe (Fortschritt) folgen derselben Form.
+function vawShapeEl(shape, cx, cy, r, attrs) {
+  if (shape === 'square') {
+    const h = r * 0.92;
+    return `<rect x="${(cx - h).toFixed(1)}" y="${(cy - h).toFixed(1)}" width="${(2 * h).toFixed(1)}" height="${(2 * h).toFixed(1)}" rx="${(r * 0.3).toFixed(1)}" ${attrs}/>`;
+  }
+  if (shape === 'hexagon') {
+    const R = r * 1.04;
+    const pts = [0, 60, 120, 180, 240, 300].map((a) => `${(cx + R * Math.cos((a * Math.PI) / 180)).toFixed(1)},${(cy + R * Math.sin((a * Math.PI) / 180)).toFixed(1)}`).join(' ');
+    return `<polygon points="${pts}" stroke-linejoin="round" ${attrs}/>`;
+  }
+  return `<circle cx="${cx}" cy="${cy}" r="${r}" ${attrs}/>`;
+}
+function vawRingLen(shape, r, off) {
+  if (shape === 'square') {
+    const h = r * 0.92 + off;
+    const rx = r * 0.3 + off;
+    return 8 * (h - rx) + 2 * Math.PI * rx;
+  }
+  if (shape === 'hexagon') return 6 * (r * 1.04 + off / 0.866);
+  return 2 * Math.PI * (r + off);
+}
+function vawRingEl(shape, cx, cy, r, off, attrs) {
+  if (shape === 'square') {
+    const h = r * 0.92 + off;
+    const rx = r * 0.3 + off;
+    const x0 = cx - h, x1 = cx + h, y0 = cy - h, y1 = cy + h;
+    const d = `M${cx.toFixed(1)},${y0.toFixed(1)} H${(x1 - rx).toFixed(1)} A${rx.toFixed(1)},${rx.toFixed(1)} 0 0 1 ${x1.toFixed(1)},${(y0 + rx).toFixed(1)} V${(y1 - rx).toFixed(1)} A${rx.toFixed(1)},${rx.toFixed(1)} 0 0 1 ${(x1 - rx).toFixed(1)},${y1.toFixed(1)} H${(x0 + rx).toFixed(1)} A${rx.toFixed(1)},${rx.toFixed(1)} 0 0 1 ${x0.toFixed(1)},${(y1 - rx).toFixed(1)} V${(y0 + rx).toFixed(1)} A${rx.toFixed(1)},${rx.toFixed(1)} 0 0 1 ${(x0 + rx).toFixed(1)},${y0.toFixed(1)} Z`;
+    return `<path d="${d}" ${attrs}/>`;
+  }
+  if (shape === 'hexagon') {
+    const R = r * 1.04 + off / 0.866;
+    const a = R * 0.866;
+    const P = (dx, dy) => `${(cx + dx).toFixed(1)},${(cy + dy).toFixed(1)}`;
+    const d = `M${P(0, -a)} L${P(R / 2, -a)} L${P(R, 0)} L${P(R / 2, a)} L${P(-R / 2, a)} L${P(-R, 0)} L${P(-R / 2, -a)} Z`;
+    return `<path d="${d}" stroke-linejoin="round" ${attrs}/>`;
+  }
+  return `<circle cx="${cx}" cy="${cy}" r="${r + off}" ${attrs}${/stroke-dasharray/.test(attrs) ? ` transform="rotate(-90 ${cx} ${cy})"` : ''}/>`;
+}
 const VAW_SCHEMA = [
   vX('', 'Kopfzeile (Titel, Datum, Uhrzeit)', [
     vT('title', 'Titel', 'Erscheint links oben in der Karte'),
     vG(vE('date', 'Datum-Sensor', 'z. B. sensor.date'), vE('time', 'Uhrzeit-Sensor', 'z. B. sensor.time')),
     vB('time_seconds', 'Uhrzeit mit Sekunden anzeigen'),
   ]),
-  vX('', 'Optik', [
+  vX('', 'Design-Vorlage und Hintergrund', [
+    vSel('theme', 'Design-Vorlage (setzt Hintergrund, Kreisstil, Animation, Form)', VAW_THEME_OPTS),
+    vSel('background', 'Hintergrund (bei Tag)', VAW_BG_OPTS),
+    vT('background_color', 'Eigene Farbe', 'Nur bei \u201eEigene Farbe\u201c, z. B. #1e293b oder rgb(30, 41, 59)'),
+    vT('background_gradient', 'Eigener Verlauf (CSS)', 'Nur bei \u201eEigener Verlauf\u201c, z. B. linear-gradient(160deg, #0f172a, #334155)'),
+    vT('background_image', 'Bildadresse', 'Nur bei \u201eEigenes Bild\u201c, z. B. /local/haus.jpg'),
+    vG(vN('background_dim', 'Bild abdunkeln', '0 bis 0.9, Standard 0.35', { min: 0, max: 0.9, step: 0.05 }), vN('background_blur', 'Bild weichzeichnen (px)', '0 bis 30, Standard 0', { min: 0, max: 30 })),
+    vSel('background_text', 'Schriftfarbe', [['auto', 'Automatisch'], ['light', 'Hell'], ['dark', 'Dunkel']]),
+    vSel('background_animation', 'Animation', [['none', 'Keine'], ['drift', 'Wandernde Farbfl\u00e4chen'], ['stars', 'Funkelnde Sterne']]),
+    vE('background_weather', 'Wetter-Entit\u00e4t (Regen, Schnee, Wolken \u2026 im Hintergrund)', 'z. B. weather.home; leer = kein Wetter-Effekt'),
+    vSel('background_night', 'Nachts (Tag/Nacht-Automatik)', [['none', 'Aus (kein Wechsel)'], ...VAW_BG_OPTS.filter((o) => o[0] !== 'color' && o[0] !== 'gradient' && o[0] !== 'image')]),
+    vE('background_night_entity', 'Sensor f\u00fcr Tag/Nacht', 'Standard sun.sun (Nacht = unter dem Horizont); bei anderen Entit\u00e4ten bedeutet \u201ean\u201c Nacht'),
+  ]),
+  vX('', 'Kreise: Form, Gr\u00f6\u00dfe, Stil', [
+    vSel('node_shape', 'Form der Kreise', [['circle', 'Kreis'], ['square', 'Viereck (abgerundet)'], ['hexagon', 'Sechseck']]),
+    vN('node_size', 'Gr\u00f6\u00dfe aller Kreise (0.6 \u2013 1.4, Standard 1)', undefined, { min: 0.6, max: 1.4, step: 0.05 }),
+    vSel('circle_style', 'Kreisstil', [['default', 'Standard'], ['flat', 'Flach (ohne Verlauf und Schatten)'], ['glass', 'Glas (halbtransparent)'], ['neon', 'Neon (d\u00fcnner Ring, starkes Leuchten)']]),
+    vList('views', 'Ansichten (Tabs, ab 2 Eintr\u00e4gen sichtbar)', {
+      name: vF('Name', vText),
+      icon: vF('Icon', { icon: {} }),
+      show: vF('Nur zeigen (leer = alles): grid, solar, battery, devices, zones oder ein Zonen-Name', { select: { multiple: true, custom_value: true, options: [{ value: 'grid', label: 'Netz' }, { value: 'solar', label: 'Solar' }, { value: 'battery', label: 'Batterie' }, { value: 'zones', label: 'Alle Zonen' }, { value: 'devices', label: 'Ger\u00e4te' }] } }),
+    }, 'name'),
+    vT('default_view', 'Startansicht (Name; leer = erste)'),
+    vB('zone_frames', 'Rahmen um jede Zone samt Ger\u00e4ten (einzeln pro Zone abschaltbar)'),
+    vB('time_travel', 'Zeitreise-Regler (Uhr-Knopf unten links)'),
+    vN('time_travel_hours', 'Zeitreise: wie viele Stunden zur\u00fcck (1 \u2013 168, Standard 24)', undefined, { min: 1, max: 168, step: 1 }),
+    vList('custom_icons', 'Eigene Icons und Bilder (verwenden als my:name im Icon-Feld)', {
+      name: vF('Name', vText),
+      url: vF('Bild-URL (z. B. /local/icons/wallbox.svg)', vText),
+      tint: vF('Mit Icon-Farbe einf\u00e4rben (nur einfarbige Bilder)', { boolean: {} }),
+    }, 'name'),
+    vB('layout_assistant', 'Layout-Assistent (Kreise per Ziehen verschieben, Knopf oben rechts)'),
+    vSel('compact', 'Kompakter Modus', [['off', 'Aus'], ['auto', 'Automatisch bei schmaler Karte'], ['on', 'Immer']]),
+    vB('fill_level', 'F\u00fcllstand im Kreis (Batterie: Ladestand, Solar: Auslastung)'),
+    vB('sparkline', 'Mini-Verlauf (Sparkline) in den Kreisen', 'Zeigt die letzten Stunden hinter dem Messwert'),
+    vN('sparkline_hours', 'Zeitraum des Verlaufs in Stunden (1 \u2013 48)', undefined, { min: 1, max: 48, step: 1 }),
+  ]),
+  vX('', 'Linien und Punkte', [
+    vSel('line_style', 'Linienstil', [['solid', 'Durchgezogen'], ['dashed', 'Gestrichelt'], ['dotted', 'Gepunktet'], ['flow', 'Fliegende Striche (animiert)'], ['neon', 'Neon (leuchtende Linien)']]),
+    vSel('flow_marker', 'Marker auf den Linien', [['dot', 'Punkt'], ['arrow', 'Pfeil'], ['diamond', 'Raute'], ['spark', 'Funken (Partikel mit Schweif)'], ['drop', 'Tropfen'], ['particles', 'Partikel nach Quelle (Funken bei Solar/Batterie, Tropfen sonst)']]),
+    vSel('flow_dots', 'Anzahl der Punkte pro Linie', [['1', 'Einer'], ['2', 'Zwei'], ['3', 'Drei'], ['auto', 'Automatisch (mehr bei mehr Leistung)']]),
+    vSel('line_corners', 'Ecken der Linien', [['round', 'Abgerundet'], ['square', 'Eckig (rechte Winkel)']]),
+    vB('line_gradient', 'Linien mit Farbverlauf (von Quelle zu Ziel)'),
+    vB('line_labels', 'Schwebende Wert-Labels an allen Linien (einzeln pro Kreis per Schalter dort)'),
     vB('line_width', 'Linien werden mit der Leistung dicker'),
     vN('line_width_max', 'Maximale Linienst\u00e4rke', 'Standard 6', { min: 3, max: 12 }),
+  ]),
+  vX('', 'Optik (Leuchten, Zahlen)', [
     vB('glow', 'Aktive Kreise leuchten'),
     vB('pulse', 'Starke Verbraucher pulsieren'),
     vN('pulse_above_w', 'Pulsieren ab (W)', 'Standard 1000', { min: 0, step: 100 }),
     vB('gradient', 'Farbverlauf und Schatten in den Kreisen'),
     vN('number_scale', 'Gr\u00f6\u00dfe der Zahlen in den Kreisen', '1 = normal, 0.5 bis 1.6', { min: 0.5, max: 1.6, step: 0.1 }),
+    vB('number_animation', 'Zahlen z\u00e4hlen sanft zum neuen Wert'),
     vB('tap_action', 'Antippen \u00f6ffnet den Verlauf des Sensors'),
   ]),
   vX('calm', 'Ruhemodus (z. B. nachts)', [
@@ -2090,6 +3427,8 @@ const VAW_SCHEMA = [
     vB('autarky', 'Autarkie (live)'),
     vB('self_consumption', 'Eigenverbrauch (live)'),
     vB('battery_time', 'Akku: Restlaufzeit bzw. Zeit bis voll (braucht die Kapazit\u00e4t bei Batterie)'),
+    vE('co2_entity', 'CO\u2082-Einsparung: Energiesensor (kWh, z. B. Solarertrag heute)'),
+    vN('co2_factor', 'CO\u2082-Faktor in kg pro kWh', 'Standard 0.2', { min: 0, max: 2, step: 0.01 }),
     vList('items', 'Weitere Werte (z. B. Tageswerte in kWh)', {
       name: vF('Name', vText),
       entity: vF('Sensor', vEnt),
@@ -2153,7 +3492,7 @@ const VAW_SCHEMA = [
   ]),
   vList('zones', 'Zonen (z. B. Stockwerke, bis 6)', vZoneFields, 'name'),
   vList('devices', 'Ger\u00e4te direkt am Haus', vDevFields, 'name'),
-  vList('status', 'Status (Garagentor, Fenster, T\u00fcren)', vStatusFields, 'name'),
+  vList('status', 'Status (Tore, Fenster, Rauchmelder, Sensoren, beliebige Entit\u00e4ten)', vStatusFields, 'name'),
   vX('', 'Weitere Karten-Optionen', [
     vB('fullscreen_button', 'Vollbild-Knopf anzeigen'),
     vB('dim_idle', 'Ger\u00e4te mit 0 W ausgrauen'),
@@ -2175,6 +3514,12 @@ const VAW_ON = ['line_width', 'glow', 'pulse', 'gradient', 'tap_action', 'limit_
 // Konfiguration -> Formulardaten (Kurzformen in Listen werden zu Objekten, Standardwerte sichtbar gemacht)
 function vawToForm(cfg) {
   const d = JSON.parse(JSON.stringify(cfg || {}));
+  if (d.custom_icons && !Array.isArray(d.custom_icons) && typeof d.custom_icons === 'object') {
+    d.custom_icons = Object.keys(d.custom_icons).map((k) => {
+      const v = d.custom_icons[k];
+      return typeof v === 'string' ? { name: k, url: v } : { name: k, url: v.url, tint: !!v.tint };
+    });
+  }
   const obj = (x, key) => (typeof x === 'string' ? { [key]: x } : x);
   const list = (arr, key) => (Array.isArray(arr) ? arr.map((x) => obj(x, key)) : arr);
   if (d.solar && d.solar.children) d.solar.children = list(d.solar.children, 'power');
@@ -2209,6 +3554,26 @@ function vawToForm(cfg) {
   walk(d);
   if (d.fullscreen_button === undefined) d.fullscreen_button = true;
   if (d.dim_idle === undefined) d.dim_idle = true;
+  if (d.theme === undefined) d.theme = 'none';
+  if (VAW_THEMES[d.theme]) Object.keys(VAW_THEMES[d.theme]).forEach((k) => { if (d[k] === undefined) d[k] = VAW_THEMES[d.theme][k]; });
+  if (d.background === undefined) d.background = 'default';
+  if (d.background_text === undefined) d.background_text = 'auto';
+  if (d.background_animation === undefined) d.background_animation = 'none';
+  if (d.background_night === undefined) d.background_night = 'none';
+  if (d.circle_style === undefined) d.circle_style = 'default';
+  if (d.node_shape === undefined) d.node_shape = 'circle';
+  if (d.line_style === undefined) d.line_style = 'solid';
+  d.flow_dots = d.flow_dots === undefined ? '1' : String(d.flow_dots);
+  if (d.line_corners === undefined) d.line_corners = 'round';
+  if (d.line_gradient === undefined) d.line_gradient = false;
+  if (d.fill_level === undefined) d.fill_level = false;
+  if (d.flow_marker === undefined) d.flow_marker = 'dot';
+  if (d.number_animation === undefined) d.number_animation = false;
+  if (d.sparkline === undefined) d.sparkline = false;
+  if (d.sparkline_hours === undefined) d.sparkline_hours = 6;
+  if (d.layout_assistant === undefined) d.layout_assistant = false;
+  if (d.compact === undefined || d.compact === false) d.compact = 'off';
+  else if (d.compact === true) d.compact = 'on';
   VAW_ON.forEach((k) => { if (d[k] === undefined) d[k] = true; });
   d.battery = { ...(d.battery || {}) };
   if (d.battery.soc_icon === undefined) d.battery.soc_icon = true;
@@ -2233,8 +3598,43 @@ function vawFromForm(data, prev) {
     Object.values(o).forEach(walk);
   };
   walk(d);
+  const keepT = {};
+  if (VAW_THEMES[d.theme]) {
+    Object.keys(VAW_THEMES[d.theme]).forEach((k) => {
+      if (d[k] !== undefined && d[k] !== VAW_THEMES[d.theme][k]) keepT[k] = d[k];
+      else delete d[k];
+    });
+  }
+  if (d.theme === 'none') delete d.theme;
   if (d.fullscreen_button === true) delete d.fullscreen_button;
   if (d.dim_idle === true) delete d.dim_idle;
+  if (d.background === 'default') delete d.background;
+  if (d.background_text === 'auto') delete d.background_text;
+  if (d.background_animation === 'none') delete d.background_animation;
+  if (d.background_night === 'none') delete d.background_night;
+  if (d.circle_style === 'default') delete d.circle_style;
+  if (d.node_shape === 'circle') delete d.node_shape;
+  if (d.node_size === '' || d.node_size === 1) delete d.node_size;
+  if (d.compact === 'off') delete d.compact;
+  if (d.layout_assistant === false) delete d.layout_assistant;
+  ['zone_frames', 'time_travel', 'line_labels'].forEach((k) => { if (d[k] === false) delete d[k]; });
+  if (Array.isArray(d.custom_icons)) {
+    const m = {};
+    d.custom_icons.forEach((i) => { if (i && i.name && i.url) m[i.name] = i.tint ? { url: i.url, tint: true } : i.url; });
+    if (Object.keys(m).length) d.custom_icons = m;
+    else delete d.custom_icons;
+  }
+  if (d.sparkline === false) delete d.sparkline;
+  if (d.line_style === 'solid') delete d.line_style;
+  if (d.flow_dots === '1') delete d.flow_dots;
+  else if (d.flow_dots !== undefined && d.flow_dots !== 'auto') d.flow_dots = Number(d.flow_dots);
+  if (d.line_corners === 'round') delete d.line_corners;
+  if (d.line_gradient === false) delete d.line_gradient;
+  if (d.fill_level === false) delete d.fill_level;
+  if (d.flow_marker === 'dot') delete d.flow_marker;
+  if (d.number_animation === false) delete d.number_animation;
+  if (d.sparkline_hours === 6) delete d.sparkline_hours;
+  Object.keys(keepT).forEach((k) => { d[k] = keepT[k]; });
   VAW_ON.forEach((k) => { if (d[k] === true) delete d[k]; });
   if (d.battery) {
     if (d.battery.soc_icon === true) delete d.battery.soc_icon;
@@ -2285,7 +3685,7 @@ class FlowCardVAWEditor extends HTMLElement {
     if (this._form) return;
     const note = document.createElement('div');
     note.style.cssText = 'font-size:12px;opacity:.7;margin:0 0 12px';
-    note.textContent = 'Flow Card Version 53 \u00b7 Sonderf\u00e4lle (secondary, extra, Namen der Ringe usw.) bleiben erhalten und lassen sich im Code-Editor (\u201eYAML\u201c) erg\u00e4nzen.';
+    note.textContent = 'Flow Card Version 1.0.4 \u00b7 Ansichten (views) und Positionen (positions) sowie Sonderf\u00e4lle (secondary, extra, Namen der Ringe usw.) bleiben erhalten und lassen sich im Code-Editor (\u201eYAML\u201c) erg\u00e4nzen.';
     const form = document.createElement('ha-form');
     form.schema = VAW_SCHEMA;
     form.hass = this._hass;
@@ -2304,11 +3704,11 @@ class FlowCardVAWEditor extends HTMLElement {
 }
 customElements.define('flow-card-vaw-editor', FlowCardVAWEditor);
 
-console.info('%c FLOW-CARD-VAW %c Version 53 ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
+console.info('%c FLOW-CARD-VAW %c Version 1.0.4 ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
 customElements.define('flow-card-vaw', FlowCardVAW);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'flow-card-vaw',
   name: 'Flow Card (W / A / V)',
-  description: 'Energiefluss mit Leistung, Strom und Spannung (Version 53)',
+  description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.0.4)',
 });
