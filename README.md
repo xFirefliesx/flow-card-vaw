@@ -2,6 +2,7 @@ Flow Card (W / A / V)
 
 A Home Assistant dashboard card in the style of the Energy distribution card, but with power (W), current (A) and voltage (V) on every circle.
 
+![Flow Card](screenshot.png)
 Screenshot rendered with test data.
 
 Features
