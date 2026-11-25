@@ -3957,12 +3957,12 @@ class FlowCardVAWEditor extends HTMLElement {
     this.appendChild(form);
   }
 }
-customElements.define('flow-card-vaw-dev-editor', FlowCardVAWEditor);
+if (!customElements.get('flow-card-vaw-dev-editor')) customElements.define('flow-card-vaw-dev-editor', FlowCardVAWEditor);
 
 console.info('%c FLOW-CARD-VAW-DEV %c Version 1.2.1-dev ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
-customElements.define('flow-card-vaw-dev', FlowCardVAW);
+if (!customElements.get('flow-card-vaw-dev')) customElements.define('flow-card-vaw-dev', FlowCardVAW);
 window.customCards = window.customCards || [];
-window.customCards.push({
+if (!window.customCards.some((c) => c && c.type === 'flow-card-vaw-dev')) window.customCards.push({
   type: 'flow-card-vaw-dev',
   name: 'Flow Card (W / A / V) DEV',
   description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.2.1)',
