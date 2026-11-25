@@ -1,8 +1,7 @@
 /* Flow Card (W / A / V) - TESTVERSION (DEV)
  * Kartentyp: custom:flow-card-vaw-dev   (laeuft parallel zur normalen Karte flow-card-vaw)
  * Datei: /config/www/flow-card-vaw-dev.js, Ressource: /local/flow-card-vaw-dev.js?v=N (JavaScript-Modul)
- * Quelle: Branch dev im Repo flow-card-vaw, Stand main 1.1.1
- * Dev-Zusatz: Layout-Assistent speichert Kreis-Positionen getrennt fuer hochkant und quer
+ * Quelle: Branch dev im Repo flow-card-vaw, Stand main 1.2.1
  */
 (() => {
 const ST_ICONS = {
@@ -3941,7 +3940,7 @@ class FlowCardVAWEditor extends HTMLElement {
     if (this._form) return;
     const note = document.createElement('div');
     note.style.cssText = 'font-size:12px;opacity:.7;margin:0 0 12px';
-    note.textContent = 'Flow Card Version 1.1.1-dev \u00b7 Ansichten (views) und Positionen (positions) sowie Sonderf\u00e4lle (secondary, extra, Namen der Ringe usw.) bleiben erhalten und lassen sich im Code-Editor (\u201eYAML\u201c) erg\u00e4nzen.';
+    note.textContent = 'Flow Card Version 1.2.1-dev \u00b7 Ansichten (views) und Positionen (positions) sowie Sonderf\u00e4lle (secondary, extra, Namen der Ringe usw.) bleiben erhalten und lassen sich im Code-Editor (\u201eYAML\u201c) erg\u00e4nzen.';
     const form = document.createElement('ha-form');
     form.schema = VAW_SCHEMA;
     form.hass = this._hass;
@@ -3960,12 +3959,12 @@ class FlowCardVAWEditor extends HTMLElement {
 }
 customElements.define('flow-card-vaw-dev-editor', FlowCardVAWEditor);
 
-console.info('%c FLOW-CARD-VAW-DEV %c Version 1.1.1-dev ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
+console.info('%c FLOW-CARD-VAW-DEV %c Version 1.2.1-dev ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
 customElements.define('flow-card-vaw-dev', FlowCardVAW);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'flow-card-vaw-dev',
   name: 'Flow Card (W / A / V) DEV',
-  description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.1.1)',
+  description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.2.1)',
 });
 })();
