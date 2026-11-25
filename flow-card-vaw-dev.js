@@ -2,6 +2,7 @@
  * Kartentyp: custom:flow-card-vaw-dev   (laeuft parallel zur normalen Karte flow-card-vaw)
  * Datei: /config/www/flow-card-vaw-dev.js, Ressource: /local/flow-card-vaw-dev.js?v=N (JavaScript-Modul)
  * Quelle: Branch dev im Repo flow-card-vaw, Stand main 1.1.1
+ * Dev-Zusatz: Layout-Assistent speichert Kreis-Positionen getrennt fuer hochkant und quer
  */
 (() => {
 const ST_ICONS = {
@@ -102,10 +103,26 @@ class FlowCardVAW extends HTMLElement {
     this._applyCfg();
   }
 
-  _posKey() {
+  // Ausrichtung des Fensters: 'v' = hochkant, 'h' = quer. Die Positionen des
+  // Layout-Assistenten werden je Ausrichtung getrennt gespeichert.
+  _orient() {
+    try {
+      const w = window.innerWidth || 0;
+      const h = window.innerHeight || 0;
+      return w && h && w < h ? 'v' : 'h';
+    } catch (e) {
+      return 'h';
+    }
+  }
+
+  _posKeyBase() {
     const c0 = this._cfg0 || {};
     const v = this._viewList()[this._vi || 0];
     return String(c0.layout_id || c0.title || 'karte') + '|' + (v && v.name ? v.name : '');
+  }
+
+  _posKey(orient) {
+    return this._posKeyBase() + '|' + (orient || this._orient());
   }
 
   _posStore() {
@@ -211,7 +228,9 @@ class FlowCardVAW extends HTMLElement {
     if (p && typeof p === 'object') Object.keys(p).forEach((k) => { if (p[k] && typeof p[k] === 'object') this._pos[k] = { x: Number(p[k].x) || 0, y: Number(p[k].y) || 0 }; });
     // im Layout-Assistenten verschobene Positionen (pro Benutzer in Home Assistant und im Browser gespeichert) haben Vorrang
     if (this._c.layout_assistant === true) {
-      const sv = this._posStore()[this._posKey()];
+      const ps = this._posStore();
+      // eigene Positionen der aktuellen Ausrichtung, sonst die alten gemeinsamen
+      const sv = ps[this._posKey()] || ps[this._posKeyBase()];
       if (sv && typeof sv === 'object') Object.keys(sv).forEach((k) => { if (sv[k] && typeof sv[k] === 'object') this._pos[k] = { x: Number(sv[k].x) || 0, y: Number(sv[k].y) || 0 }; });
     }
     this._render();
@@ -249,6 +268,16 @@ class FlowCardVAW extends HTMLElement {
     document.addEventListener('fullscreenchange', this._onFsChange);
     document.addEventListener('webkitfullscreenchange', this._onFsChange);
     window.addEventListener('keydown', this._onKey);
+    // beim Drehen die Positionen der anderen Ausrichtung laden
+    this._orientNow = this._orient();
+    this._onOrient = () => {
+      const o = this._orient();
+      if (o === this._orientNow) return;
+      this._orientNow = o;
+      if (this._c && !this._drag) this._applyCfg();
+    };
+    window.addEventListener('resize', this._onOrient);
+    window.addEventListener('orientationchange', this._onOrient);
     if (this.shadowRoot && this.shadowRoot.querySelector('ha-card')) this._applyLook();
     // Ruhemodus mit Zeitfenster: einmal pro Minute pr\u00fcfen
     this._tickN = 0;
@@ -268,6 +297,8 @@ class FlowCardVAW extends HTMLElement {
     document.removeEventListener('fullscreenchange', this._onFsChange);
     document.removeEventListener('webkitfullscreenchange', this._onFsChange);
     window.removeEventListener('keydown', this._onKey);
+    window.removeEventListener('resize', this._onOrient);
+    window.removeEventListener('orientationchange', this._onOrient);
     if (this._fs === 'native') {
       try {
         (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
