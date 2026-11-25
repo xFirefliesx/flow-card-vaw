@@ -127,12 +127,12 @@ number_animation: true       # numbers count smoothly to the new value
 
 Settings you write yourself always override a theme. Animations are paused in calm mode and disabled if the device asks for reduced motion.
 
-![Backgrounds](images/backgrounds.png)
-![Circle styles, animations, day/night, compact](images/looks.png)
-![Shapes and size](images/shapes.png)
-![Weather backgrounds](images/weather.png)
-![Sparklines](images/sparkline.png)
-![Line styles](images/lines.png)
+![Backgrounds](backgrounds.png)
+![Circle styles, animations, day/night, compact](looks.png)
+![Shapes and size](shapes.png)
+![Weather backgrounds](weather.png)
+![Sparklines](sparkline.png)
+![Line styles](lines.png)
 
 ### Zoom
 
