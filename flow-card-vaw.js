@@ -96,10 +96,26 @@ class FlowCardVAW extends HTMLElement {
     this._applyCfg();
   }
 
-  _posKey() {
+  // Ausrichtung des Fensters: 'v' = hochkant, 'h' = quer. Die Positionen des
+  // Layout-Assistenten werden je Ausrichtung getrennt gespeichert.
+  _orient() {
+    try {
+      const w = window.innerWidth || 0;
+      const h = window.innerHeight || 0;
+      return w && h && w < h ? 'v' : 'h';
+    } catch (e) {
+      return 'h';
+    }
+  }
+
+  _posKeyBase() {
     const c0 = this._cfg0 || {};
     const v = this._viewList()[this._vi || 0];
     return String(c0.layout_id || c0.title || 'karte') + '|' + (v && v.name ? v.name : '');
+  }
+
+  _posKey(orient) {
+    return this._posKeyBase() + '|' + (orient || this._orient());
   }
 
   _posStore() {
@@ -205,7 +221,9 @@ class FlowCardVAW extends HTMLElement {
     if (p && typeof p === 'object') Object.keys(p).forEach((k) => { if (p[k] && typeof p[k] === 'object') this._pos[k] = { x: Number(p[k].x) || 0, y: Number(p[k].y) || 0 }; });
     // im Layout-Assistenten verschobene Positionen (pro Benutzer in Home Assistant und im Browser gespeichert) haben Vorrang
     if (this._c.layout_assistant === true) {
-      const sv = this._posStore()[this._posKey()];
+      const ps = this._posStore();
+      // eigene Positionen der aktuellen Ausrichtung, sonst die alten gemeinsamen
+      const sv = ps[this._posKey()] || ps[this._posKeyBase()];
       if (sv && typeof sv === 'object') Object.keys(sv).forEach((k) => { if (sv[k] && typeof sv[k] === 'object') this._pos[k] = { x: Number(sv[k].x) || 0, y: Number(sv[k].y) || 0 }; });
     }
     this._render();
@@ -243,6 +261,16 @@ class FlowCardVAW extends HTMLElement {
     document.addEventListener('fullscreenchange', this._onFsChange);
     document.addEventListener('webkitfullscreenchange', this._onFsChange);
     window.addEventListener('keydown', this._onKey);
+    // beim Drehen die Positionen der anderen Ausrichtung laden
+    this._orientNow = this._orient();
+    this._onOrient = () => {
+      const o = this._orient();
+      if (o === this._orientNow) return;
+      this._orientNow = o;
+      if (this._c && !this._drag) this._applyCfg();
+    };
+    window.addEventListener('resize', this._onOrient);
+    window.addEventListener('orientationchange', this._onOrient);
     if (this.shadowRoot && this.shadowRoot.querySelector('ha-card')) this._applyLook();
     // Ruhemodus mit Zeitfenster: einmal pro Minute pr\u00fcfen
     this._tickN = 0;
@@ -262,6 +290,8 @@ class FlowCardVAW extends HTMLElement {
     document.removeEventListener('fullscreenchange', this._onFsChange);
     document.removeEventListener('webkitfullscreenchange', this._onFsChange);
     window.removeEventListener('keydown', this._onKey);
+    window.removeEventListener('resize', this._onOrient);
+    window.removeEventListener('orientationchange', this._onOrient);
     if (this._fs === 'native') {
       try {
         (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
@@ -3904,7 +3934,7 @@ class FlowCardVAWEditor extends HTMLElement {
     if (this._form) return;
     const note = document.createElement('div');
     note.style.cssText = 'font-size:12px;opacity:.7;margin:0 0 12px';
-    note.textContent = 'Flow Card Version 1.1.1 \u00b7 Ansichten (views) und Positionen (positions) sowie Sonderf\u00e4lle (secondary, extra, Namen der Ringe usw.) bleiben erhalten und lassen sich im Code-Editor (\u201eYAML\u201c) erg\u00e4nzen.';
+    note.textContent = 'Flow Card Version 1.2.1 \u00b7 Ansichten (views) und Positionen (positions) sowie Sonderf\u00e4lle (secondary, extra, Namen der Ringe usw.) bleiben erhalten und lassen sich im Code-Editor (\u201eYAML\u201c) erg\u00e4nzen.';
     const form = document.createElement('ha-form');
     form.schema = VAW_SCHEMA;
     form.hass = this._hass;
@@ -3923,11 +3953,11 @@ class FlowCardVAWEditor extends HTMLElement {
 }
 customElements.define('flow-card-vaw-editor', FlowCardVAWEditor);
 
-console.info('%c FLOW-CARD-VAW %c Version 1.1.1 ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
+console.info('%c FLOW-CARD-VAW %c Version 1.2.1 ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
 customElements.define('flow-card-vaw', FlowCardVAW);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'flow-card-vaw',
   name: 'Flow Card (W / A / V)',
-  description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.1.1)',
+  description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.2.1)',
 });

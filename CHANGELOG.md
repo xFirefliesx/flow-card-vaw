@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.1
+
+- Layout assistant: circle positions are stored separately for portrait and landscape. Moving a circle in one orientation no longer changes the other, and rotating the device loads the matching layout without a reload
+- Positions saved so far keep working: they are the starting point for both orientations until a circle is moved in that orientation for the first time
+
 ## 1.1.1
 
 - Layout assistant: the small circles (solar panels, batteries, phases L1-L3, peak, sub-devices) can now be dragged one by one, with grid snapping and alignment guides; the canvas grows or shifts so nothing is cut off. Status circles are movable too, all the way to the top
