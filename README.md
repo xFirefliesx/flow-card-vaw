@@ -7,6 +7,7 @@ A Home Assistant dashboard card in the style of the Energy distribution card, bu
 *Screenshot rendered with test data.*
 
 If you enjoy my work and would like to support future projects, consider buying me a coffee. Every contribution helps keep new ideas brewing. ☕ Thank you for your support!
+
 [![Buy Me A Coffee](https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png)](https://www.buymeacoffee.com/xfirefliesx)
 
 
