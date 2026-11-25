@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.1
+
+- Layout assistant: the small circles (solar panels, batteries, phases L1-L3, peak, sub-devices) can now be dragged one by one, with grid snapping and alignment guides; the canvas grows or shifts so nothing is cut off. Status circles are movable too, all the way to the top
+- Layout assistant: grid (10 units) and pink alignment guides that snap to the centre of other circles, switchable with the grid button
+- Per-circle diameter slider (`size`, 0.5 to 1.6) for main circles, zones, devices, sub-devices, phases, panels, batteries and status circles
+- Font size per circle (`font_size`, 0.5 to 2.5) or following the circle size (`font_follow_size: true`)
+- Collection circle `rest` (house consumption minus all zones and devices, never negative)
+- Fix: header and info line of status entries were empty after a redraw (view switch, layout assistant, time travel)
+- Fix: status chips in the header no longer hide under the time travel and layout buttons
+- Visual editor re-ordered by topic (card, views, layout and time travel, data, appearance); every option is still there
+
 ## 1.1.0
 
 - **Security:** all values from the card configuration (names, icons, colours, titles) are now escaped or validated before they are put into the card's markup. Unsafe colour and icon values are ignored, names containing HTML are shown as plain text.

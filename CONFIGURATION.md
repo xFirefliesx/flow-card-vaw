@@ -387,5 +387,24 @@ Infozeile:
     co2_factor: 0.2       # kg pro kWh
     co2_name: CO₂ gespart
 
+Neu in 1.1.1:
+
+Größe und Schrift pro Kreis:
+  solar: {size: 1.3, font_size: 1.2}   # size = Durchmesser (0.5 bis 1.6), font_size = Schriftgröße (0.5 bis 2.5)
+  font_follow_size: true               # Schrift wächst mit der Kreisgröße (font_size überschreibt das pro Kreis)
+  # size und font_size gibt es bei grid, solar, battery, home, zones, devices, children, phases und status
+
+Sammelkreis Rest:
+  rest: true             # Hausverbrauch minus alle Zonen und Geräte (nie negativ)
+  # oder: rest: {name: Sonstiges, icon: "mdi:dots-horizontal-circle-outline", color: "#9e9e9e", size: 1.2, no_link: false}
+
+Layout-Assistent (zusätzlich):
+  # Raster (10) und Hilfslinien über die Leiste unten; jeder kleine Kreis ist einzeln verschiebbar
+  positions:
+    solar_c0: {x: -40, y: 20}   # Panel 1 von Solar (solar_c0, solar_c1 ...)
+    gph_1: {x: 0, y: 30}        # Phase 2 am Netz (gph_0, gph_1 ...)
+    bat_c0: {x: 10, y: 0}       # Batterie 1
+    st_0_0: {x: 0, y: -200}     # Status-Kreis (Eintrag 0, Sensor 0)
+
 Sicherheit: Farben dürfen nur Namen, #hex, rgb()/hsl()/var() und Verläufe enthalten, andere Werte werden ignoriert.
 ```

@@ -635,6 +635,8 @@ class FlowCardVAW extends HTMLElement {
   }
 
   _render() {
+    this._hsHtml = null;
+    this._infoHtml = null;
     const c = this._c;
     // Optik-Optionen (alle einzeln abschaltbar)
     const optOn = (k) => c[k] !== false;
@@ -661,6 +663,13 @@ class FlowCardVAW extends HTMLElement {
       ns: c.number_scale !== undefined ? Math.max(0.5, Math.min(1.6, Number(c.number_scale) || 1)) : 1,
     };
     this._o = OPT;
+    // Schriftgr\u00f6\u00dfe pro Kreis: font_size (Faktor) oder mit der Kreisgr\u00f6\u00dfe (font_follow_size)
+    const FOL = c.font_follow_size === true;
+    const fmOf = (cfg, sf) => {
+      const m = cfg ? Number(cfg.font_size) : NaN;
+      if (!isNaN(m) && m > 0) return Math.max(0.5, Math.min(2.5, m));
+      return FOL ? Math.max(0.6, Math.min(1.8, sf || 1)) : 1;
+    };
     const L0 = c.limits && typeof c.limits === 'object' ? c.limits : {};
     const numOr = (v, d) => (v !== undefined && v !== null && v !== '' && !isNaN(Number(v)) ? Number(v) : d);
     this._lim = {
@@ -686,7 +695,10 @@ class FlowCardVAW extends HTMLElement {
       if (!gradDefs.has(col)) gradDefs.set(col, 'vg' + gradDefs.size);
       return gradDefs.get(col);
     };
-    const devs = c.devices || [];
+    // Sammelkreis "Rest": Hausverbrauch minus alle Zonen und Ger\u00e4te (rest: true oder {name, icon, color, size, no_link})
+    const restOn = c.rest === true || (c.rest && typeof c.rest === 'object');
+    const restDev = restOn ? { name: 'Rest', icon: 'mdi:dots-horizontal-circle-outline', color: '#9e9e9e', ...(typeof c.rest === 'object' ? c.rest : {}), rest: true } : null;
+    const devs = (c.devices || []).concat(restDev ? [restDev] : []);
     const kidsCfg = c.solar && Array.isArray(c.solar.children) ? c.solar.children.slice(0, 10) : [];
     // Z\u00e4hlerst\u00e4nde (kWh) unter dem Netz-Kreis: grid.meter {import, export}
     const gridMeter = c.grid && c.grid.meter && typeof c.grid.meter === 'object' ? c.grid.meter : null;
@@ -919,6 +931,7 @@ class FlowCardVAW extends HTMLElement {
     }
     {
       const seen = new Set();
+      let grow = 0;
       const szOf = (n) => {
         const k = n.cfg && n.cfg.size !== undefined && !isNaN(Number(n.cfg.size)) ? Math.max(0.5, Math.min(1.6, Number(n.cfg.size))) : 1;
         return SZ * k;
@@ -926,9 +939,24 @@ class FlowCardVAW extends HTMLElement {
       nodes.concat(this._home ? [this._home] : []).forEach((n) => {
         if (seen.has(n)) return;
         seen.add(n);
-        n.r = Math.round(n.r * szOf(n));
+        const r0 = n.r;
+        n.szf = szOf(n);
+        n.r = Math.round(n.r * n.szf);
+        if (n.key === 'solar' || n.key === 'battery') grow = Math.max(grow, n.r - r0);
         if (n.kidR) n.kidR = Math.round(n.kidR * SZ);
       });
+      // gr\u00f6\u00dfere Kreise: oben mehr Platz, damit nichts abgeschnitten wird
+      const gk = Math.max(0, SZ - 1) * 56;
+      const dyT = Math.round(Math.max(0, grow) + gk);
+      if (dyT > 0) {
+        const seen2 = new Set();
+        nodes.concat(this._home ? [this._home] : []).forEach((n) => {
+          if (seen2.has(n)) return;
+          seen2.add(n);
+          n.y += dyT;
+        });
+        VH += dyT;
+      }
     }
     nodes.forEach((n) => { n.four = n.key === 'grid' || (n.key === 'battery' && bFour); });
     this._nodes = nodes;
@@ -982,6 +1010,20 @@ class FlowCardVAW extends HTMLElement {
         if (dx || dy) nodes.forEach((n) => { n.x += dx; n.y += dy; });
         VW = Math.max(VW + dx, x1 + dx);
         VH = Math.max(VH + dy, y1 + dy);
+      }
+    }
+    {
+      const S = this._kShift;
+      if (S && (S.x || S.y)) {
+        const seenS = new Set();
+        nodes.concat(this._home ? [this._home] : []).forEach((n) => {
+          if (seenS.has(n)) return;
+          seenS.add(n);
+          n.x += S.x;
+          n.y += S.y;
+        });
+        VW += S.x;
+        VH += S.y;
       }
     }
     // ---- Verbindungen ----
@@ -1092,27 +1134,42 @@ class FlowCardVAW extends HTMLElement {
     // ---- kleine Kreise: Solar-Panels (oben) und Batterien (oben bzw. im waagrechten Layout unten) ----
     let kidSvg = '';
     this._kids = [];
+    this._kAbs = {};
+    this._kidBox = null;
     this._peakKid = null;
     const makeKids = (parent, list, prefix, mode, main, opt = {}) => {
       if (!parent || !list.length) return;
       const k = list.length;
-      const r = Math.round((opt.r || parent.kidR || (main === 'm' ? 33 : k <= 6 ? 26 : 20)) * (parent.kidR ? 1 : SZ));
+      const rB = Math.round((opt.r || parent.kidR || (main === 'm' ? 33 : k <= 6 ? 26 : 20)) * (parent.kidR ? 1 : SZ));
       const kd = opt.dist !== undefined ? opt.dist : parent.kidDist; // Abstand zum Elternkreis
-      const gap = 2 * r + 6;
-      const tiny = r < 22;
+      const gap = 2 * rB + 6;
+      const tiny = rB < 22;
       const w = (k - 1) * gap;
-      let x0 = Math.max(parent.x - w / 2 + (opt.shiftX || 0), r + 4);
-      x0 = Math.min(x0, Math.max(r + 4, VW - r - 4 - w));
+      let x0 = Math.max(parent.x - w / 2 + (opt.shiftX || 0), rB + 4);
+      x0 = Math.min(x0, Math.max(rB + 4, VW - rB - 4 - w));
       const below = mode === 'below';
       const padK = parent.pad || 0;
       const left = mode === 'left'; // Spalte links neben dem Kreis
       const cy0 = below ? parent.y + parent.r + (kd !== undefined ? kd : 64) + padK : parent.y - parent.r - (kd || 75) - padK;
-      if (below) VH = Math.max(VH, cy0 + r + 30 + (parent.mtail || 0));
+      const kmax = Math.max(1, ...list.map((x) => (x && typeof x === 'object' && !isNaN(Number(x.size)) ? Math.min(1.6, Number(x.size)) : 1)));
+      if (below) VH = Math.max(VH, cy0 + rB * kmax + 30 + (parent.mtail || 0));
       list.forEach((raw, i) => {
         const o = typeof raw === 'string' ? { [main === 's' ? 'soc' : 'power']: raw } : { ...raw };
         const id = prefix + i;
-        const cx = left ? parent.x - parent.r - (kd || 22) - r : x0 + i * gap;
-        const cy = left ? parent.y + (i - (k - 1) / 2) * gap : cy0;
+        const ksz = o.size !== undefined && !isNaN(Number(o.size)) ? Math.max(0.5, Math.min(1.6, Number(o.size))) : 1;
+        const r = Math.round(rB * ksz);
+        const pk = this._pos && this._pos[id];
+        const cx = (left ? parent.x - parent.r - (kd || 22) - r : x0 + i * gap) + (pk ? Number(pk.x) || 0 : 0);
+        const cy = (left ? parent.y + (i - (k - 1) / 2) * gap : cy0 + (below ? 0 : Math.max(0, r - rB))) + (pk ? Number(pk.y) || 0 : 0);
+        this._kAbs[id] = { x: cx, y: cy, r };
+        if (pk && (pk.x || pk.y)) {
+          const kbx = this._kidBox || (this._kidBox = { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 });
+          kbx.x0 = Math.min(kbx.x0, cx - r - (left ? 70 : 40));
+          kbx.x1 = Math.max(kbx.x1, cx + r + 40);
+          kbx.y0 = Math.min(kbx.y0, cy - r - 16);
+          kbx.y1 = Math.max(kbx.y1, cy + r + 20);
+        }
+        const FK = fmOf(o, ksz);
         if (main === 'm') this._peakKid = { cx, cy, r };
         {
           const kb = parent._kb || (parent._kb = { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 });
@@ -1160,13 +1217,13 @@ class FlowCardVAW extends HTMLElement {
         const KC = vawRingLen(SH, r, 0);
         this._kids.push({ o, id, col, socRing, KC });
         const KN = kk.length;
-        const lineH = KN >= 4 ? (tiny ? 8 : 9.5) : tiny ? 9 : 10;
+        const lineH = (KN >= 4 ? (tiny ? 8 : 9.5) : tiny ? 9 : 10) * FK;
         const kfirst = cy + 4 - ((KN - 1) * lineH) / 2;
         const ktxt = kk
           .map((q, qi) => {
             const yy = kfirst + qi * lineH;
-            if (qi === 0) return `<text id="k${q}_${id}" x="${cx}" y="${yy}" class="p" style="font-size:${tiny ? 10 : 12}px">\u2013</text>`;
-            return `<text id="k${q}_${id}" x="${cx}" y="${yy}" class="s" style="font-size:${tiny ? 7.5 : 8.5}px">\u2013</text>`;
+            if (qi === 0) return `<text id="k${q}_${id}" x="${cx}" y="${yy}" class="p" style="font-size:${(tiny ? 10 : 12) * FK}px">\u2013</text>`;
+            return `<text id="k${q}_${id}" x="${cx}" y="${yy}" class="s" style="font-size:${(tiny ? 7.5 : 8.5) * FK}px">\u2013</text>`;
           })
           .join('\n            ');
         kidSvg += `
@@ -1175,7 +1232,7 @@ class FlowCardVAW extends HTMLElement {
             ${OPT.grad && main !== 'm' ? vawShapeEl(SH, cx, cy, r, `fill="url(#${gradId(col)})" pointer-events="none"`) : ''}
             ${socRing ? vawRingEl(SH, cx, cy, r, 0, `id="kr_${id}" fill="none" stroke="${col}" stroke-width="3" stroke-linecap="round" stroke-dasharray="0 ${KC.toFixed(1)}" opacity="0"`) : ''}
             ${ktxt}
-            ${o.name ? (left ? `<text x="${cx - r - 5}" y="${cy + 3}" class="n" style="font-size:9px;text-anchor:end">${vawEsc(o.name)}</text>` : `<text x="${cx}" y="${below ? cy + r + 12 : cy - r - 5}" class="n" style="font-size:9px">${vawEsc(o.name)}</text>`) : ''}
+            ${o.name ? (left ? `<text x="${cx - r - 5}" y="${cy + 3}" class="n" style="font-size:${9 * FK}px;text-anchor:end">${vawEsc(o.name)}</text>` : `<text x="${cx}" y="${below ? cy + r + 12 : cy - r - 5}" class="n" style="font-size:${9 * FK}px">${vawEsc(o.name)}</text>`) : ''}
           </g>`;
       });
     };
@@ -1225,32 +1282,75 @@ class FlowCardVAW extends HTMLElement {
       dn.phKids = list.map((o, i) => dn.key + 'c' + i);
       makeKids(dn, list, dn.key + 'c', 'below', 'p');
     });
+    // verschobene kleine Kreise nie abschneiden: links/oben alles verschieben (zweiter Durchlauf), rechts/unten erweitern
+    {
+      const S0 = this._kShift || { x: 0, y: 0 };
+      const kb = this._kidBox;
+      const needX = kb ? Math.max(0, -(kb.x0 - S0.x)) : 0;
+      const needY = kb ? Math.max(0, -(kb.y0 - S0.y)) : 0;
+      if ((needX !== S0.x || needY !== S0.y) && !this._kRe) {
+        if (this._drag) {
+          const ddx = needX - S0.x;
+          const ddy = needY - S0.y;
+          this._drag.sx += ddx;
+          this._drag.sy += ddy;
+          if (this._drag.bx !== null && this._drag.bx !== undefined) {
+            this._drag.bx += ddx;
+            this._drag.by += ddy;
+          }
+        }
+        this._kShift = { x: needX, y: needY };
+        this._kRe = true;
+        try { return this._render(); } finally { this._kRe = false; }
+      }
+      if (kb) {
+        VW = Math.max(VW, Math.ceil(kb.x1));
+        VH = Math.max(VH, Math.ceil(kb.y1));
+      }
+    }
     // Unabh\u00e4ngige Status-Kreise unten: ein Kreis pro Sensor (nicht mit dem Diagramm verbunden)
     const stCirc = [];
     stCfg.forEach((o, i) => { if (o.show.includes('circles')) o.ents.forEach((e, j) => stCirc.push({ i, j })); });
     this._stCirc = stCirc;
     let stSvg = '';
     let stIcons = '';
+    this._stAbsNew = {};
     if (stCirc.length) {
       const R2 = 24;
       const GX = 26;
-      const perRow = Math.max(1, Math.floor((VW - 40) / (2 * R2 + GX)));
+      const szS = (q) => {
+        const z = Number(stCfg[q.i] && stCfg[q.i].size);
+        return isNaN(z) || !(z > 0) ? 1 : Math.max(0.5, Math.min(1.6, z));
+      };
+      const RM = Math.max(R2, ...stCirc.map((q) => Math.round(R2 * szS(q))));
+      const perRow = Math.max(1, Math.floor((VW - 40) / (2 * RM + GX)));
       const rows = Math.ceil(stCirc.length / perRow);
       const y0 = VH + 6;
-      VH = y0 + rows * 82 + 6;
+      const rowH = 82 + 2 * (RM - R2);
+      VH = y0 + rows * rowH + 6;
       stCirc.forEach((q, k) => {
         const row = Math.floor(k / perRow);
         const inRow = row === rows - 1 ? stCirc.length - row * perRow : perRow;
-        const cx = VW / 2 + (k - row * perRow - (inRow - 1) / 2) * (2 * R2 + GX);
-        const cy = y0 + R2 + 4 + row * 82;
+        const rs = Math.round(R2 * szS(q));
         const id = q.i + '_' + q.j;
-        stSvg += `<g class="stc" id="stc_${id}" data-st="${q.i}:${q.j}">${vawShapeEl(SH, cx, cy, R2, 'fill="var(--card-background-color, #fff)"')}${vawShapeEl(SH, cx, cy, R2, `id="stk_${id}" fill="none" stroke="#888" stroke-width="3"`)}<text id="stt_${id}" x="${cx}" y="${cy + 16}" class="s" style="font-size:9px">\u2013</text><text id="stn_${id}" x="${cx}" y="${cy + R2 + 14}" class="n" style="font-size:10px"></text></g>`;
+        const pq = (this._pos && this._pos['st_' + id]) || null;
+        // (Position wird unten f\u00fcr den Layout-Assistenten gemerkt)
+        const cx = Math.max(rs + 4, Math.min(VW - rs - 4, VW / 2 + (k - row * perRow - (inRow - 1) / 2) * (2 * RM + GX) + (pq ? pq.x : 0)));
+        const cy = Math.max(rs + 4, y0 + RM + 4 + row * rowH + (pq ? pq.y : 0));
+        if (pq && cy + rs + 26 > VH) VH = cy + rs + 26;
+        (this._stAbsNew = this._stAbsNew || {})['st_' + id] = { x: cx, y: cy, r: rs };
+        stSvg += `<g class="stc" id="stc_${id}" data-st="${q.i}:${q.j}">${vawShapeEl(SH, cx, cy, rs, 'fill="var(--card-background-color, #fff)"')}${vawShapeEl(SH, cx, cy, rs, `id="stk_${id}" fill="none" stroke="#888" stroke-width="3"`)}<text id="stt_${id}" x="${cx}" y="${cy + 16}" class="s" style="font-size:${9 * fmOf(stCfg[q.i], szS(q))}px">\u2013</text><text id="stn_${id}" x="${cx}" y="${cy + rs + 14}" class="n" style="font-size:${10 * fmOf(stCfg[q.i], szS(q))}px"></text></g>`;
         const se = this._stSwEnt(stCfg[q.i], q.j);
-        if (se) swBtn('st_' + id, { switch: se, switch_confirm: stCfg[q.i].switch_confirm, name: stCfg[q.i].ents.length === 1 && stCfg[q.i].name ? stCfg[q.i].name : stCfg[q.i].ents[q.j].name || stCfg[q.i].name }, cx, cy, R2, stCfg[q.i].open_color || '#fb8c00');
-        stIcons += `<ha-icon id="sti_${id}" icon="mdi:door-closed" style="left:${(cx / VW) * 100}%;top:${((cy - 5) / VH) * 100}%;color:#888;--mdc-icon-size:${((18 / VW) * 100).toFixed(3)}cqw"></ha-icon>`;
+        if (se) swBtn('st_' + id, { switch: se, switch_confirm: stCfg[q.i].switch_confirm, name: stCfg[q.i].ents.length === 1 && stCfg[q.i].name ? stCfg[q.i].name : stCfg[q.i].ents[q.j].name || stCfg[q.i].name }, cx, cy, rs, stCfg[q.i].open_color || '#fb8c00');
+        stIcons += `<ha-icon id="sti_${id}" icon="mdi:door-closed" style="left:${(cx / VW) * 100}%;top:${((cy - 5) / VH) * 100}%;color:#888;--mdc-icon-size:${((18 * rs / R2 / VW) * 100).toFixed(3)}cqw"></ha-icon>`;
       });
     }
     if (c.line_corners === 'square') links.forEach((l) => { l.d = l.d.replace(/Q(-?[\d.]+),(-?[\d.]+) (-?[\d.]+),(-?[\d.]+)/g, 'L$1,$2 L$3,$4'); });
+    // Positionen aller verschiebbaren Kreise merken (f\u00fcr Raster und Hilfslinien im Layout-Assistenten)
+    this._abs = {};
+    nodes.forEach((n) => { this._abs[n.key] = { x: n.x, y: n.y, r: n.r }; });
+    Object.keys(this._stAbsNew || {}).forEach((k) => { this._abs[k] = this._stAbsNew[k]; });
+    Object.keys(this._kAbs || {}).forEach((k) => { this._abs[k] = this._kAbs[k]; });
     // Rahmen um Zonen samt Ger\u00e4ten (zone_frames: true oder pro Zone frame: true/false)
     let frameSvg = '';
     nodes.filter((n) => /^z\d+$/.test(n.key)).forEach((zn) => {
@@ -1294,6 +1394,15 @@ class FlowCardVAW extends HTMLElement {
         llSvg += `<text class="ll" id="ll_${l.id}" text-anchor="middle" visibility="hidden">\u2013</text>`;
       }
     });
+    // Raster und Hilfslinien (nur im Layout-Assistenten)
+    let gridSvg = '';
+    let guideSvg = '';
+    if (this._la) {
+      if (this._laGrid !== false) gridSvg = `<defs><pattern id="vawgrid" width="10" height="10" patternUnits="userSpaceOnUse"><circle cx="5" cy="5" r="0.8" fill="#9e9e9e" opacity="0.55"/></pattern></defs><rect x="0" y="0" width="${VW}" height="${VH}" fill="url(#vawgrid)" pointer-events="none"/>`;
+      (this._guides || []).forEach((g) => {
+        guideSvg += `<line x1="${g[0]}" y1="${g[1]}" x2="${g[2]}" y2="${g[3]}" stroke="#ff4081" stroke-width="1.2" stroke-dasharray="4 3" pointer-events="none"/>`;
+      });
+    }
     this._links = links;
 
     let paths = '';
@@ -1391,8 +1500,9 @@ class FlowCardVAW extends HTMLElement {
       n.lines = kinds;
       const N = kinds.length;
       const sc = n.four ? 1 : s;
-      let step = (N <= 2 ? 17 : N === 3 ? 15 : N === 4 ? 13.5 : 12.5) * sc;
-      let first = n.y + 8 * sc - ((N - 1) * step) / 2;
+      const FM = fmOf(n.cfg, n.szf);
+      let step = (N <= 2 ? 17 : N === 3 ? 15 : N === 4 ? 13.5 : 12.5) * sc * FM;
+      let first = n.y + 8 * sc * FM - ((N - 1) * step) / 2;
       let iconY = n.y - n.r * (n.r <= 34 ? 0.62 : 0.65);
       let socY = null;
       if (hasSoc) {
@@ -1405,12 +1515,12 @@ class FlowCardVAW extends HTMLElement {
         first = Math.max(first, iconY + 22);
         step = Math.min(step, (n.y + n.r - 14 - first) / (N - 1));
       }
-      const smallFs = Math.min(n.four ? 11 : 12 * s, Math.max(8, step * 0.9));
+      const smallFs = Math.min(n.four ? 11 : 12 * s, Math.max(8, (step * 0.9) / FM)) * FM;
       const body = kinds
         .map((k, i) => {
           const yy = first + i * step;
-          if (k === 'p' || k === 'in') return `<text x="${n.x}" y="${yy}" class="p" style="font-size:${n.four ? 14 : 16 * s}px;${tc}">\u2013</text>`;
-          if (k === 'out') return `<text x="${n.x}" y="${yy}" class="p" style="font-size:14px;fill:${c2}">\u2013</text>`;
+          if (k === 'p' || k === 'in') return `<text x="${n.x}" y="${yy}" class="p" style="font-size:${(n.four ? 14 : 16 * s) * FM}px;${tc}">\u2013</text>`;
+          if (k === 'out') return `<text x="${n.x}" y="${yy}" class="p" style="font-size:${14 * FM}px;fill:${c2}">\u2013</text>`;
           return `<text x="${n.x}" y="${yy}" class="s" style="font-size:${smallFs}px;${tc}">\u2013</text>`;
         })
         .join('\n           ');
@@ -1440,9 +1550,9 @@ class FlowCardVAW extends HTMLElement {
           ${fillSvg}
           ${sparkSvg}
           ${body}
-          ${hasSoc ? `<text id="soc_${n.key}" x="${n.x}" y="${socY}" class="p" style="font-size:14px;${tc}"></text>` : ''}
-          <text x="${lx}" y="${ny}" class="n" style="text-anchor:${lan}">${vawEsc(n.cfg.name === undefined || n.cfg.name === null ? '' : n.cfg.name)} ${lbl}</text>
-          <text id="sec_${n.key}" x="${lx}" y="${sy2}" class="sec" style="text-anchor:${lan}"></text>
+          ${hasSoc ? `<text id="soc_${n.key}" x="${n.x}" y="${socY}" class="p" style="font-size:${14 * FM}px;${tc}"></text>` : ''}
+          <text x="${lx}" y="${ny}" class="n" style="text-anchor:${lan}${FM !== 1 ? ';font-size:' + 13 * FM + 'px' : ''}">${vawEsc(n.cfg.name === undefined || n.cfg.name === null ? '' : n.cfg.name)} ${lbl}</text>
+          <text id="sec_${n.key}" x="${lx}" y="${sy2}" class="sec" style="text-anchor:${lan}${FM !== 1 ? ';font-size:' + 11 * FM + 'px' : ''}"></text>
           ${meterSvg}
         </g>`;
     }
@@ -1487,7 +1597,7 @@ class FlowCardVAW extends HTMLElement {
     };
     this._laYamlText = laYaml;
     const laHtml = (c.layout_assistant === true ? `<div class="labtn${this._la ? ' on' : ''}" data-act="la" title="Layout bearbeiten"><ha-icon icon="mdi:cursor-move"></ha-icon></div>` : '')
-      + (this._la ? `${this._laTxt ? `<textarea class="lat" readonly>${esc(laYaml())}</textarea>` : ''}<div class="labar"><span>Kreise ziehen</span><button data-act="lareset">Zur\u00fccksetzen</button><button data-act="lacopy">YAML</button><button data-act="ladone">Fertig</button></div>` : '');
+      + (this._la ? `${this._laTxt ? `<textarea class="lat" readonly>${esc(laYaml())}</textarea>` : ''}<div class="labar"><span>Kreise ziehen</span><button data-act="lagrid">Raster ${this._laGrid === false ? 'aus' : 'an'}</button><button data-act="lareset">Zur\u00fccksetzen</button><button data-act="lacopy">YAML</button><button data-act="ladone">Fertig</button></div>` : '');
     const ttHrs = this._ttHours();
     const ttHtml = c.time_travel === true
       ? (this._ttOn
@@ -1646,6 +1756,8 @@ class FlowCardVAW extends HTMLElement {
         ha-card.hastt.fs { padding-bottom: 0; }
         ha-card.tton { outline: 2px solid var(--primary-color, #03a9f4); outline-offset: -2px; }
         ha-card.hasla .ttbtn { right: 44px; }
+        ha-card.hasla .hdr, ha-card.hastb .hdr { padding-right: 44px; }
+        ha-card.hasla.hastb .hdr { padding-right: 80px; }
         .ttbtn { position: absolute; right: 8px; top: 8px; z-index: 6; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: rgba(127, 127, 127, 0.22); color: var(--primary-text-color); cursor: pointer; --mdc-icon-size: 18px; }
         .ttbar { position: absolute; left: 8px; right: 92px; bottom: 6px; z-index: 6; display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 16px; background: var(--card-background-color, #1c1c1c); border: 1px solid rgba(127, 127, 127, 0.45); font-size: 12px; color: var(--primary-text-color); }
         .ttbar .tts { flex: 1; min-width: 60px; accent-color: var(--primary-color, #03a9f4); }
@@ -1664,7 +1776,8 @@ class FlowCardVAW extends HTMLElement {
         .labar span { flex: 1; opacity: 0.8; }
         .labar button { border: 0; border-radius: 14px; padding: 6px 12px; background: var(--primary-color, #03a9f4); color: #fff; cursor: pointer; font: inherit; }
         .lat { position: absolute; left: 8px; right: 8px; bottom: 62px; z-index: 6; height: 96px; font: 12px monospace; padding: 6px; border-radius: 8px; border: 1px solid rgba(127, 127, 127, 0.5); background: var(--card-background-color, #1c1c1c); color: var(--primary-text-color); resize: none; }
-        ha-card.la g.node { cursor: move; }
+        ha-card.la g.node, ha-card.la g.stc, ha-card.la g.kid { cursor: move; }
+        ha-card.la g.sw { pointer-events: none; }
         ha-card.la .wrap { touch-action: none; }
         ha-card.la g.node > [id^="c_"] { stroke-dasharray: 7 5; }
         ha-card.la .bga, ha-card.la .bga i, ha-card.la .bgw i, ha-card.la .bgw b { animation: none !important; }
@@ -1679,12 +1792,12 @@ class FlowCardVAW extends HTMLElement {
         ha-card.compact .chip { font-size: 11.5px; padding: 2px 8px; }
         ha-card.compact .sp { font-size: 12px; padding: 3px 9px 3px 6px; }
       </style>
-      <ha-card class="${c.fullscreen_button === false ? '' : 'hasfs'}${OPT.zoom ? ' haszm' : ''}${hdr || infoOn ? ' hasx' : ''}${this._la ? ' la' : ''}${c.layout_assistant === true ? ' hasla' : ''}${c.time_travel === true && this._ttOn ? ' hastt' : ''}${this._ttOn ? ' tton' : ''}${OPT.grad ? ' grad' : ''}${OPT.glow ? ' glow' : ''}${OPT.tap ? ' tap' : ''}" style="--ar:${(VW / VH).toFixed(4)};--extra:${extraH}px;--ns:${OPT.ns};--vaw-lim:${this._lim.color};--calm-dim:${c.calm && c.calm.dim !== undefined && !isNaN(Number(c.calm.dim)) ? Math.max(0.2, Math.min(1, Number(c.calm.dim))) : 0.75}">
+      <ha-card class="${c.fullscreen_button === false ? '' : 'hasfs'}${OPT.zoom ? ' haszm' : ''}${hdr || infoOn ? ' hasx' : ''}${this._la ? ' la' : ''}${c.layout_assistant === true ? ' hasla' : ''}${c.time_travel === true ? ' hastb' : ''}${c.time_travel === true && this._ttOn ? ' hastt' : ''}${this._ttOn ? ' tton' : ''}${OPT.grad ? ' grad' : ''}${OPT.glow ? ' glow' : ''}${OPT.tap ? ' tap' : ''}" style="--ar:${(VW / VH).toFixed(4)};--extra:${extraH}px;--ns:${OPT.ns};--vaw-lim:${this._lim.color};--calm-dim:${c.calm && c.calm.dim !== undefined && !isNaN(Number(c.calm.dim)) ? Math.max(0.2, Math.min(1, Number(c.calm.dim))) : 0.75}">
         ${hdr}
         ${tabsHtml}
         <div class="wrap${OPT.zoom ? ' zm' : ''}">
           <div class="zi">
-            <svg viewBox="0 0 ${VW} ${VH}">${defsSvg}${frameSvg}${paths}${dots}${circles}${kidSvg}${llSvg}${stSvg}${swSvg}${stbSvg}</svg>
+            <svg viewBox="0 0 ${VW} ${VH}">${defsSvg}${gridSvg}${frameSvg}${paths}${dots}${circles}${kidSvg}${llSvg}${stSvg}${swSvg}${stbSvg}${guideSvg}</svg>
             ${icons}${stIcons}${stbIcons}
           </div>
         </div>
@@ -1745,8 +1858,36 @@ class FlowCardVAW extends HTMLElement {
         if (!d) return;
         const p = pt(e);
         if (!p) return;
-        const cl = (v) => Math.max(-500, Math.min(500, Math.round(v / 2) * 2));
-        this._pos[d.key] = { x: cl(d.ox + p[0] - d.sx), y: cl(d.oy + p[1] - d.sy) };
+        const cl = (v) => Math.max(-2000, Math.min(2000, Math.round(v)));
+        let nx = d.ox + p[0] - d.sx;
+        let ny = d.oy + p[1] - d.sy;
+        this._guides = [];
+        if (d.bx !== null && d.bx !== undefined) {
+          // Raster (10) und Einrasten an der Mitte anderer Kreise mit Hilfslinien
+          let ax = d.bx + nx;
+          let ay = d.by + ny;
+          if (this._laGrid !== false) {
+            ax = Math.round(ax / 10) * 10;
+            ay = Math.round(ay / 10) * 10;
+          }
+          const others = Object.keys(this._abs || {}).filter((k) => k !== d.key).map((k) => this._abs[k]);
+          let gx = null;
+          let gy = null;
+          others.forEach((o) => {
+            if (Math.abs(ax - o.x) <= 6 && (gx === null || Math.abs(ax - o.x) < Math.abs(ax - gx.x))) gx = o;
+            if (Math.abs(ay - o.y) <= 6 && (gy === null || Math.abs(ay - o.y) < Math.abs(ay - gy.y))) gy = o;
+          });
+          if (gx) ax = gx.x;
+          if (gy) ay = gy.y;
+          if (gx) this._guides.push([ax, Math.min(ay, gx.y) - 20, ax, Math.max(ay, gx.y) + 20]);
+          if (gy) this._guides.push([Math.min(ax, gy.x) - 20, ay, Math.max(ax, gy.x) + 20, ay]);
+          nx = ax - d.bx;
+          ny = ay - d.by;
+        }
+        // Status-Kreise: nie ueber den oberen Rand hinaus (sonst abgeschnitten)
+        const abD = this._abs && this._abs[d.key];
+        if (abD && d.key.indexOf('st_') === 0 && d.by !== null && d.by !== undefined && d.by + ny < abD.r + 4) ny = abD.r + 4 - d.by;
+        this._pos[d.key] = { x: cl(nx), y: cl(ny) };
         if (!this._laRaf) this._laRaf = requestAnimationFrame(() => { this._laRaf = 0; this._render(); });
       };
       this._laUp = () => {
@@ -1754,20 +1895,23 @@ class FlowCardVAW extends HTMLElement {
         window.removeEventListener('pointerup', this._laUp);
         window.removeEventListener('pointercancel', this._laUp);
         this._drag = null;
+        this._guides = [];
         this._posSave();
+        this._render();
       };
       sr0.addEventListener('pointerdown', (e) => {
         if (!this._la) return;
-        const g = e.target.closest ? e.target.closest('g.node') : null;
-        if (!g || !g.id || g.id.indexOf('g_') !== 0) return;
+        const g = e.target.closest ? e.target.closest('g.node, g.stc, g.kid') : null;
+        if (!g || !g.id || (g.id.indexOf('g_') !== 0 && g.id.indexOf('stc_') !== 0 && g.id.indexOf('kg_') !== 0)) return;
         e.stopPropagation();
         e.preventDefault();
         const p = pt(e);
         if (!p) return;
-        const key = g.id.slice(2);
+        const key = g.id.indexOf('stc_') === 0 ? 'st_' + g.id.slice(4) : g.id.indexOf('kg_') === 0 ? g.id.slice(3) : g.id.slice(2);
         const cur = (this._pos && this._pos[key]) || {};
         this._pos = this._pos || {};
-        this._drag = { key, sx: p[0], sy: p[1], ox: Number(cur.x) || 0, oy: Number(cur.y) || 0 };
+        const ab = (this._abs && this._abs[key]) || null;
+        this._drag = { key, sx: p[0], sy: p[1], ox: Number(cur.x) || 0, oy: Number(cur.y) || 0, bx: ab ? ab.x - (Number(cur.x) || 0) : null, by: ab ? ab.y - (Number(cur.y) || 0) : null };
         window.addEventListener('pointermove', this._laMv);
         window.addEventListener('pointerup', this._laUp);
         window.addEventListener('pointercancel', this._laUp);
@@ -1804,6 +1948,8 @@ class FlowCardVAW extends HTMLElement {
           } else if (a === 'ladone') {
             this._la = false;
             this._laTxt = false;
+          } else if (a === 'lagrid') {
+            this._laGrid = this._laGrid === false;
           } else if (a === 'lareset') {
             this._posSave(true);
             this._applyCfg();
@@ -1812,7 +1958,7 @@ class FlowCardVAW extends HTMLElement {
             try { navigator.clipboard.writeText(this._laYamlText()); } catch (er) { /* Textfeld zum Kopieren wird angezeigt */ }
           }
           this._render();
-        } else if (this._la && e.target.closest && e.target.closest('g.node')) {
+        } else if (this._la && e.target.closest && e.target.closest('g.node, g.stc, g.kid')) {
           e.stopPropagation();
         }
       }, true);
@@ -2699,6 +2845,30 @@ class FlowCardVAW extends HTMLElement {
       h._p = by.grid || by.solar || by.battery ? balance : null;
     }
 
+    // Sammelkreis "Rest" = Hausverbrauch minus alles, was Zonen und Ger\u00e4te bereits zeigen
+    {
+      const rn = this._nodes.find((n) => n.cfg && n.cfg.rest === true && n.dev);
+      if (rn) {
+        const lnk = (n) => !(n.cfg && (n.cfg.no_link === true || n.cfg.connected === false));
+        let sum = 0;
+        this._nodes.forEach((n) => {
+          if (n === rn || !n.dev || !lnk(n)) return;
+          if (/^z\d+$/.test(n.key)) {
+            const own = this._num(n.cfg.power, 'p');
+            if (own !== null) sum += Math.max(0, own);
+            else (n.devNodes || []).forEach((d) => { if (d !== rn && lnk(d) && d._p !== null && d._p !== undefined) sum += Math.max(0, d._p); });
+          } else if (/^d\d+$/.test(n.key) && n._p !== null && n._p !== undefined) sum += Math.max(0, n._p);
+        });
+        rn._p = Math.max(0, H - sum);
+        this._nodes.forEach((n) => {
+          if (n.devNodes && n.devNodes.includes(rn) && this._num(n.cfg.power, 'p') === null) {
+            const vals = n.devNodes.filter((d) => d._p !== null && d._p !== undefined);
+            if (vals.length) n._p = vals.reduce((a, d) => a + d._p, 0);
+          }
+        });
+      }
+    }
+
     // Netzbezug geht immer zuerst (und nur) ins Haus
     let Hrem = H;
     const g2h = Math.min(Gi, Hrem); Hrem -= g2h;
@@ -3105,11 +3275,15 @@ const vEnt = { entity: {} };
 const vMeasure = () => [vG(vE('current', 'Strom (A)'), vE('voltage', 'Spannung (V)')), vG(vE('temperature', 'Temperatur (\u00b0C)'), vN('current_max', 'Strom-Grenze (A)', 'Rot ab hier')) ];
 const vLook = () => [
   vG(vT('name', 'Name'), vI('icon', 'Icon')),
+  { name: 'size', label: 'Durchmesser dieses Kreises (Schieber, Standard 1)', selector: { number: { mode: 'slider', min: 0.5, max: 1.6, step: 0.05 } } },
+  { name: 'font_size', label: 'Schriftgr\u00f6\u00dfe dieses Kreises (Schieber, Standard 1 = automatisch)', selector: { number: { mode: 'slider', min: 0.5, max: 2.5, step: 0.05 } } },
   vB('line_label', 'Wert an der Linie zu diesem Kreis anzeigen'),
   vG(vT('color', 'Farbe', 'Farbcode, z. B. #ff9800'), vT('line_color', 'Linienfarbe'), vT('icon_color', 'Icon-Farbe'), vT('text_color', 'Zahlenfarbe')),
 ];
 // Felder f\u00fcr Listeneintr\u00e4ge (Ger\u00e4te, Zonen, Phasen, Panels, Batterien)
 const vChildFields = {
+  size: vF('Durchmesser (Schieber, 0.5 bis 1.6, Standard 1)', { number: { mode: 'slider', min: 0.5, max: 1.6, step: 0.05 } }),
+  font_size: vF('Schriftgr\u00f6\u00dfe (Schieber, 0.5 bis 2.5, Standard 1 = automatisch)', { number: { mode: 'slider', min: 0.5, max: 2.5, step: 0.05 } }),
   switch: vF('Schalter (Entit\u00e4t zum Ein-/Ausschalten, z. B. switch.herd)', vEnt),
   switch_confirm: vF('Vor dem Schalten nachfragen', { boolean: {} }),
   current_max: vF('Strom-Grenze (A)', { number: { mode: 'box', min: 0 } }),
@@ -3126,6 +3300,8 @@ const vDevFields = {
   current_max: vF('Strom-Grenze (A)', { number: { mode: 'box', min: 0 } }),
   name: vF('Name', vText),
   icon: vF('Icon (mdi:..., my:name oder Bild-URL)', { icon: {} }),
+  size: vF('Durchmesser (Schieber, 0.5 bis 1.6, Standard 1)', { number: { mode: 'slider', min: 0.5, max: 1.6, step: 0.05 } }),
+  font_size: vF('Schriftgr\u00f6\u00dfe (Schieber, 0.5 bis 2.5, Standard 1 = automatisch)', { number: { mode: 'slider', min: 0.5, max: 2.5, step: 0.05 } }),
   line_label: vF('Wert an der Linie anzeigen', { boolean: {} }),
   no_link: vF('Ohne Verbindungslinie (steht allein, keine Linie zum Haus bzw. zur Zone)', { boolean: {} }),
   power: vF('Leistung (W)', vEnt),
@@ -3136,6 +3312,8 @@ const vDevFields = {
   children: vF('Unterger\u00e4te (kleine Kreise unter dem Ger\u00e4t, bis 6)', { object: { multiple: true, label_field: 'name', fields: vChildFields } }),
 };
 const vPhaseFields = {
+  size: vF('Durchmesser (Schieber, 0.5 bis 1.6, Standard 1)', { number: { mode: 'slider', min: 0.5, max: 1.6, step: 0.05 } }),
+  font_size: vF('Schriftgr\u00f6\u00dfe (Schieber, 0.5 bis 2.5, Standard 1 = automatisch)', { number: { mode: 'slider', min: 0.5, max: 2.5, step: 0.05 } }),
   current_max: vF('Strom-Grenze (A)', { number: { mode: 'box', min: 0 } }),
   name: vF('Name (leer = L1, L2, \u2026)', vText),
   power: vF('Leistung (W)', vEnt),
@@ -3144,6 +3322,8 @@ const vPhaseFields = {
   color: vF('Farbe (z. B. #ff9800)', vText),
 };
 const vGridPhFields = {
+  size: vF('Durchmesser (Schieber, 0.5 bis 1.6, Standard 1)', { number: { mode: 'slider', min: 0.5, max: 1.6, step: 0.05 } }),
+  font_size: vF('Schriftgr\u00f6\u00dfe (Schieber, 0.5 bis 2.5, Standard 1 = automatisch)', { number: { mode: 'slider', min: 0.5, max: 2.5, step: 0.05 } }),
   current_max: vF('Strom-Grenze (A)', { number: { mode: 'box', min: 0 } }),
   name: vF('Name (leer = L1, L2, \u2026)', vText),
   power: vF('Leistung (W, positiv = Bezug)', vEnt),
@@ -3168,6 +3348,8 @@ const vBatFields = {
   color: vF('Farbe (z. B. #ff9800)', vText),
 };
 const vStatusFields = {
+  size: vF('Durchmesser des Status-Kreises (Schieber, 0.5 bis 1.6, Standard 1)', { number: { mode: 'slider', min: 0.5, max: 1.6, step: 0.05 } }),
+  font_size: vF('Schriftgr\u00f6\u00dfe (Schieber, 0.5 bis 2.5, Standard 1 = automatisch)', { number: { mode: 'slider', min: 0.5, max: 2.5, step: 0.05 } }),
   name: vF('Name (z. B. Garagentor, Fenster)', vText),
   entity: vF('Sensor / Entit\u00e4t (Tor, Fenster, Rauchmelder, Temperatur ...)', vEnt),
   entities: vF('Mehrere Sensoren (z. B. alle Fenster oder alle Rauchmelder)', { entity: { multiple: true } }),
@@ -3344,100 +3526,28 @@ function vawRingEl(shape, cx, cy, r, off, attrs) {
   return `<circle cx="${cx}" cy="${cy}" r="${r + off}" ${attrs}${/stroke-dasharray/.test(attrs) ? ` transform="rotate(-90 ${cx} ${cy})"` : ''}/>`;
 }
 const VAW_SCHEMA = [
-  vX('', 'Kopfzeile (Titel, Datum, Uhrzeit)', [
+  vX('', 'Karte: Titel, Layout, Bedienung', [
     vT('title', 'Titel', 'Erscheint links oben in der Karte'),
     vG(vE('date', 'Datum-Sensor', 'z. B. sensor.date'), vE('time', 'Uhrzeit-Sensor', 'z. B. sensor.time')),
     vB('time_seconds', 'Uhrzeit mit Sekunden anzeigen'),
+  vSel('layout', 'Layout', [['horizontal', 'Waagrecht'], ['vertical', 'Senkrecht (baut sich nach unten auf)']]),
+    vSel('compact', 'Kompakter Modus', [['off', 'Aus'], ['auto', 'Automatisch bei schmaler Karte'], ['on', 'Immer']]),
+    vB('fullscreen_button', 'Vollbild-Knopf anzeigen'),
+    vB('zoom', 'Zoomen und Verschieben (Strg + Mausrad, Pinch, Kn\u00f6pfe + / \u2212)'),
   ]),
-  vX('', 'Design-Vorlage und Hintergrund', [
-    vSel('theme', 'Design-Vorlage (setzt Hintergrund, Kreisstil, Animation, Form)', VAW_THEME_OPTS),
-    vSel('background', 'Hintergrund (bei Tag)', VAW_BG_OPTS),
-    vT('background_color', 'Eigene Farbe', 'Nur bei \u201eEigene Farbe\u201c, z. B. #1e293b oder rgb(30, 41, 59)'),
-    vT('background_gradient', 'Eigener Verlauf (CSS)', 'Nur bei \u201eEigener Verlauf\u201c, z. B. linear-gradient(160deg, #0f172a, #334155)'),
-    vT('background_image', 'Bildadresse', 'Nur bei \u201eEigenes Bild\u201c, z. B. /local/haus.jpg'),
-    vG(vN('background_dim', 'Bild abdunkeln', '0 bis 0.9, Standard 0.35', { min: 0, max: 0.9, step: 0.05 }), vN('background_blur', 'Bild weichzeichnen (px)', '0 bis 30, Standard 0', { min: 0, max: 30 })),
-    vSel('background_text', 'Schriftfarbe', [['auto', 'Automatisch'], ['light', 'Hell'], ['dark', 'Dunkel']]),
-    vSel('background_animation', 'Animation', [['none', 'Keine'], ['drift', 'Wandernde Farbfl\u00e4chen'], ['stars', 'Funkelnde Sterne']]),
-    vE('background_weather', 'Wetter-Entit\u00e4t (Regen, Schnee, Wolken \u2026 im Hintergrund)', 'z. B. weather.home; leer = kein Wetter-Effekt'),
-    vSel('background_night', 'Nachts (Tag/Nacht-Automatik)', [['none', 'Aus (kein Wechsel)'], ...VAW_BG_OPTS.filter((o) => o[0] !== 'color' && o[0] !== 'gradient' && o[0] !== 'image')]),
-    vE('background_night_entity', 'Sensor f\u00fcr Tag/Nacht', 'Standard sun.sun (Nacht = unter dem Horizont); bei anderen Entit\u00e4ten bedeutet \u201ean\u201c Nacht'),
-  ]),
-  vX('', 'Kreise: Form, Gr\u00f6\u00dfe, Stil', [
-    vSel('node_shape', 'Form der Kreise', [['circle', 'Kreis'], ['square', 'Viereck (abgerundet)'], ['hexagon', 'Sechseck']]),
-    vN('node_size', 'Gr\u00f6\u00dfe aller Kreise (0.6 \u2013 1.4, Standard 1)', undefined, { min: 0.6, max: 1.4, step: 0.05 }),
-    vSel('circle_style', 'Kreisstil', [['default', 'Standard'], ['flat', 'Flach (ohne Verlauf und Schatten)'], ['glass', 'Glas (halbtransparent)'], ['neon', 'Neon (d\u00fcnner Ring, starkes Leuchten)']]),
+  vX('', 'Ansichten (Tabs)', [
     vList('views', 'Ansichten (Tabs, ab 2 Eintr\u00e4gen sichtbar)', {
       name: vF('Name', vText),
       icon: vF('Icon', { icon: {} }),
       show: vF('Nur zeigen (leer = alles): grid, solar, battery, devices, zones oder ein Zonen-Name', { select: { multiple: true, custom_value: true, options: [{ value: 'grid', label: 'Netz' }, { value: 'solar', label: 'Solar' }, { value: 'battery', label: 'Batterie' }, { value: 'zones', label: 'Alle Zonen' }, { value: 'devices', label: 'Ger\u00e4te' }] } }),
     }, 'name'),
     vT('default_view', 'Startansicht (Name; leer = erste)'),
-    vB('zone_frames', 'Rahmen um jede Zone samt Ger\u00e4ten (einzeln pro Zone abschaltbar)'),
-    vB('time_travel', 'Zeitreise-Regler (Uhr-Knopf unten links)'),
-    vN('time_travel_hours', 'Zeitreise: wie viele Stunden zur\u00fcck (1 \u2013 168, Standard 24)', undefined, { min: 1, max: 168, step: 1 }),
-    vList('custom_icons', 'Eigene Icons und Bilder (verwenden als my:name im Icon-Feld)', {
-      name: vF('Name', vText),
-      url: vF('Bild-URL (z. B. /local/icons/wallbox.svg)', vText),
-      tint: vF('Mit Icon-Farbe einf\u00e4rben (nur einfarbige Bilder)', { boolean: {} }),
-    }, 'name'),
+  ]),
+  vX('', 'Layout-Assistent und Zeitreise', [
     vB('layout_assistant', 'Layout-Assistent (Kreise per Ziehen verschieben, Knopf oben rechts)'),
-    vSel('compact', 'Kompakter Modus', [['off', 'Aus'], ['auto', 'Automatisch bei schmaler Karte'], ['on', 'Immer']]),
-    vB('fill_level', 'F\u00fcllstand im Kreis (Batterie: Ladestand, Solar: Auslastung)'),
-    vB('sparkline', 'Mini-Verlauf (Sparkline) in den Kreisen', 'Zeigt die letzten Stunden hinter dem Messwert'),
-    vN('sparkline_hours', 'Zeitraum des Verlaufs in Stunden (1 \u2013 48)', undefined, { min: 1, max: 48, step: 1 }),
+    vB('time_travel', 'Zeitreise-Regler (Uhr-Knopf oben rechts)'),
+    vN('time_travel_hours', 'Zeitreise: wie viele Stunden zur\u00fcck (1 \u2013 168, Standard 24)', undefined, { min: 1, max: 168, step: 1 }),
   ]),
-  vX('', 'Linien und Punkte', [
-    vSel('line_style', 'Linienstil', [['solid', 'Durchgezogen'], ['dashed', 'Gestrichelt'], ['dotted', 'Gepunktet'], ['flow', 'Fliegende Striche (animiert)'], ['neon', 'Neon (leuchtende Linien)']]),
-    vSel('flow_marker', 'Marker auf den Linien', [['dot', 'Punkt'], ['arrow', 'Pfeil'], ['diamond', 'Raute'], ['spark', 'Funken (Partikel mit Schweif)'], ['drop', 'Tropfen'], ['particles', 'Partikel nach Quelle (Funken bei Solar/Batterie, Tropfen sonst)']]),
-    vSel('flow_dots', 'Anzahl der Punkte pro Linie', [['1', 'Einer'], ['2', 'Zwei'], ['3', 'Drei'], ['auto', 'Automatisch (mehr bei mehr Leistung)']]),
-    vSel('line_corners', 'Ecken der Linien', [['round', 'Abgerundet'], ['square', 'Eckig (rechte Winkel)']]),
-    vB('line_gradient', 'Linien mit Farbverlauf (von Quelle zu Ziel)'),
-    vB('line_labels', 'Schwebende Wert-Labels an allen Linien (einzeln pro Kreis per Schalter dort)'),
-    vB('line_width', 'Linien werden mit der Leistung dicker'),
-    vN('line_width_max', 'Maximale Linienst\u00e4rke', 'Standard 6', { min: 3, max: 12 }),
-  ]),
-  vX('', 'Optik (Leuchten, Zahlen)', [
-    vB('glow', 'Aktive Kreise leuchten'),
-    vB('pulse', 'Starke Verbraucher pulsieren'),
-    vN('pulse_above_w', 'Pulsieren ab (W)', 'Standard 1000', { min: 0, step: 100 }),
-    vB('gradient', 'Farbverlauf und Schatten in den Kreisen'),
-    vN('number_scale', 'Gr\u00f6\u00dfe der Zahlen in den Kreisen', '1 = normal, 0.5 bis 1.6', { min: 0.5, max: 1.6, step: 0.1 }),
-    vB('number_animation', 'Zahlen z\u00e4hlen sanft zum neuen Wert'),
-    vB('tap_action', 'Antippen \u00f6ffnet den Verlauf des Sensors'),
-  ]),
-  vX('calm', 'Ruhemodus (z. B. nachts)', [
-    vB('always', 'Immer ruhig'),
-    vE('entity', 'Sensor/Schalter: ruhig, solange \u201ean\u201c', 'z. B. input_boolean oder sun.sun (ruhig unter dem Horizont)'),
-    vG({ name: 'from', label: 'Ruhig von', selector: { time: {} } }, { name: 'to', label: 'bis', selector: { time: {} } }),
-    vSel('dots', 'Punkte im Ruhemodus', [['slow', 'Langsam (Standard)'], ['off', 'Aus'], ['normal', 'Normal']]),
-    vN('dim', 'Helligkeit der Karte', '0.2 bis 1, Standard 0.75', { min: 0.2, max: 1, step: 0.05 }),
-    vB('follow_system', 'Auch ruhig, wenn das Ger\u00e4t \u201eAnimationen reduzieren\u201c eingestellt hat'),
-  ]),
-  vX('', 'Grenzwerte (Warnfarbe)', [
-    vB('limit_colors', 'Kreise und Werte rot f\u00e4rben, wenn ein Grenzwert verletzt wird'),
-    vB('zoom', 'Zoomen und Verschieben (Strg + Mausrad, Pinch, Kn\u00f6pfe + / \u2212)'),
-    vX('limits', 'Grenzwerte', [
-      vG(vN('voltage_min', 'Spannung min. (V)', 'Standard 207'), vN('voltage_max', 'Spannung max. (V)', 'Standard 253')),
-      vN('current_max', 'Strom max. (A)', 'Standard: keine Grenze'),
-      vG(vN('frequency_min', 'Frequenz min. (Hz)', 'Standard 49.8', { step: 0.1 }), vN('frequency_max', 'Frequenz max. (Hz)', 'Standard 50.2', { step: 0.1 })),
-      vT('color', 'Warnfarbe', 'Standard #e53935'),
-    ]),
-  ]),
-  vX('info', 'Infozeile unter der Karte', [
-    vB('autarky', 'Autarkie (live)'),
-    vB('self_consumption', 'Eigenverbrauch (live)'),
-    vB('battery_time', 'Akku: Restlaufzeit bzw. Zeit bis voll (braucht die Kapazit\u00e4t bei Batterie)'),
-    vE('co2_entity', 'CO\u2082-Einsparung: Energiesensor (kWh, z. B. Solarertrag heute)'),
-    vN('co2_factor', 'CO\u2082-Faktor in kg pro kWh', 'Standard 0.2', { min: 0, max: 2, step: 0.01 }),
-    vList('items', 'Weitere Werte (z. B. Tageswerte in kWh)', {
-      name: vF('Name', vText),
-      entity: vF('Sensor', vEnt),
-      icon: vF('Icon', { icon: {} }),
-      decimals: vF('Nachkommastellen', { number: { mode: 'box', min: 0, max: 4 } }),
-      unit: vF('Einheit (leer = vom Sensor)', vText),
-    }, 'name'),
-  ]),
-  vSel('layout', 'Layout', [['horizontal', 'Waagrecht'], ['vertical', 'Senkrecht (baut sich nach unten auf)']]),
   vX('grid', 'Netz', [
     vE('power', 'Leistung (ein Sensor)', 'Positiv = Bezug, negativ = Einspeisung. Alternativ unten getrennt eintragen.'),
     vG(vE('import_power', 'Bezug (W)'), vE('export_power', 'Einspeisung (W)')),
@@ -3482,6 +3592,7 @@ const VAW_SCHEMA = [
     ...vMeasure(),
     ...vLook(),
     vG(vT('charge_color', 'Farbe beim Laden'), vT('discharge_color', 'Farbe beim Entladen')),
+    vB('grid_to_battery', 'Netzbezug darf auch die Batterie laden (Punkte)'),
     vList('children', 'Einzelne Batterien (bis 10, kleine Kreise)', vBatFields, 'soc'),
   ]),
   vX('home', 'Haus', [
@@ -3490,16 +3601,93 @@ const VAW_SCHEMA = [
     ...vLook(),
     vB('ring', 'Au\u00dfenring mit den Anteilen der Zonen/Ger\u00e4te'),
   ]),
+  vX('', 'Zonen, Ger\u00e4te und Rest', [
   vList('zones', 'Zonen (z. B. Stockwerke, bis 6)', vZoneFields, 'name'),
+    vB('zone_frames', 'Rahmen um jede Zone samt Ger\u00e4ten (einzeln pro Zone abschaltbar)'),
   vList('devices', 'Ger\u00e4te direkt am Haus', vDevFields, 'name'),
+    vT('devices_name', 'Name der Zone f\u00fcr \u201eGer\u00e4te direkt am Haus\u201c', 'Nur wenn zus\u00e4tzlich Zonen existieren, Standard: Sonstige'),
+    vB('rest', 'Sammelkreis "Rest" (Hausverbrauch minus alle Zonen und Ger\u00e4te)'),
+  ]),
   vList('status', 'Status (Tore, Fenster, Rauchmelder, Sensoren, beliebige Entit\u00e4ten)', vStatusFields, 'name'),
-  vX('', 'Weitere Karten-Optionen', [
-    vB('fullscreen_button', 'Vollbild-Knopf anzeigen'),
+  vX('info', 'Infozeile unter der Karte', [
+    vB('autarky', 'Autarkie (live)'),
+    vB('self_consumption', 'Eigenverbrauch (live)'),
+    vB('battery_time', 'Akku: Restlaufzeit bzw. Zeit bis voll (braucht die Kapazit\u00e4t bei Batterie)'),
+    vE('co2_entity', 'CO\u2082-Einsparung: Energiesensor (kWh, z. B. Solarertrag heute)'),
+    vN('co2_factor', 'CO\u2082-Faktor in kg pro kWh', 'Standard 0.2', { min: 0, max: 2, step: 0.01 }),
+    vList('items', 'Weitere Werte (z. B. Tageswerte in kWh)', {
+      name: vF('Name', vText),
+      entity: vF('Sensor', vEnt),
+      icon: vF('Icon', { icon: {} }),
+      decimals: vF('Nachkommastellen', { number: { mode: 'box', min: 0, max: 4 } }),
+      unit: vF('Einheit (leer = vom Sensor)', vText),
+    }, 'name'),
+  ]),
+  vX('', 'Aussehen: Design-Vorlage und Hintergrund', [
+    vSel('theme', 'Design-Vorlage (setzt Hintergrund, Kreisstil, Animation, Form)', VAW_THEME_OPTS),
+    vSel('background', 'Hintergrund (bei Tag)', VAW_BG_OPTS),
+    vT('background_color', 'Eigene Farbe', 'Nur bei \u201eEigene Farbe\u201c, z. B. #1e293b oder rgb(30, 41, 59)'),
+    vT('background_gradient', 'Eigener Verlauf (CSS)', 'Nur bei \u201eEigener Verlauf\u201c, z. B. linear-gradient(160deg, #0f172a, #334155)'),
+    vT('background_image', 'Bildadresse', 'Nur bei \u201eEigenes Bild\u201c, z. B. /local/haus.jpg'),
+    vG(vN('background_dim', 'Bild abdunkeln', '0 bis 0.9, Standard 0.35', { min: 0, max: 0.9, step: 0.05 }), vN('background_blur', 'Bild weichzeichnen (px)', '0 bis 30, Standard 0', { min: 0, max: 30 })),
+    vSel('background_text', 'Schriftfarbe', [['auto', 'Automatisch'], ['light', 'Hell'], ['dark', 'Dunkel']]),
+    vSel('background_animation', 'Animation', [['none', 'Keine'], ['drift', 'Wandernde Farbfl\u00e4chen'], ['stars', 'Funkelnde Sterne']]),
+    vE('background_weather', 'Wetter-Entit\u00e4t (Regen, Schnee, Wolken \u2026 im Hintergrund)', 'z. B. weather.home; leer = kein Wetter-Effekt'),
+    vSel('background_night', 'Nachts (Tag/Nacht-Automatik)', [['none', 'Aus (kein Wechsel)'], ...VAW_BG_OPTS.filter((o) => o[0] !== 'color' && o[0] !== 'gradient' && o[0] !== 'image')]),
+    vE('background_night_entity', 'Sensor f\u00fcr Tag/Nacht', 'Standard sun.sun (Nacht = unter dem Horizont); bei anderen Entit\u00e4ten bedeutet \u201ean\u201c Nacht'),
+  ]),
+  vX('', 'Aussehen: Kreise (Form, Gr\u00f6\u00dfe, Stil, Icons)', [
+    vSel('node_shape', 'Form der Kreise', [['circle', 'Kreis'], ['square', 'Viereck (abgerundet)'], ['hexagon', 'Sechseck']]),
+    vN('node_size', 'Gr\u00f6\u00dfe aller Kreise (0.6 \u2013 1.4, Standard 1)', undefined, { min: 0.6, max: 1.4, step: 0.05 }),
+    vB('font_follow_size', 'Schrift w\u00e4chst mit der Kreisgr\u00f6\u00dfe (pro Kreis \u00fcberschreibbar mit dem Schrift-Schieber)'),
+    vSel('circle_style', 'Kreisstil', [['default', 'Standard'], ['flat', 'Flach (ohne Verlauf und Schatten)'], ['glass', 'Glas (halbtransparent)'], ['neon', 'Neon (d\u00fcnner Ring, starkes Leuchten)']]),
+    vB('fill_level', 'F\u00fcllstand im Kreis (Batterie: Ladestand, Solar: Auslastung)'),
+    vB('sparkline', 'Mini-Verlauf (Sparkline) in den Kreisen', 'Zeigt die letzten Stunden hinter dem Messwert'),
+    vN('sparkline_hours', 'Zeitraum des Verlaufs in Stunden (1 \u2013 48)', undefined, { min: 1, max: 48, step: 1 }),
+    vList('custom_icons', 'Eigene Icons und Bilder (verwenden als my:name im Icon-Feld)', {
+      name: vF('Name', vText),
+      url: vF('Bild-URL (z. B. /local/icons/wallbox.svg)', vText),
+      tint: vF('Mit Icon-Farbe einf\u00e4rben (nur einfarbige Bilder)', { boolean: {} }),
+    }, 'name'),
+  ]),
+  vX('', 'Aussehen: Linien und Punkte', [
+    vSel('line_style', 'Linienstil', [['solid', 'Durchgezogen'], ['dashed', 'Gestrichelt'], ['dotted', 'Gepunktet'], ['flow', 'Fliegende Striche (animiert)'], ['neon', 'Neon (leuchtende Linien)']]),
+    vSel('flow_marker', 'Marker auf den Linien', [['dot', 'Punkt'], ['arrow', 'Pfeil'], ['diamond', 'Raute'], ['spark', 'Funken (Partikel mit Schweif)'], ['drop', 'Tropfen'], ['particles', 'Partikel nach Quelle (Funken bei Solar/Batterie, Tropfen sonst)']]),
+    vSel('flow_dots', 'Anzahl der Punkte pro Linie', [['1', 'Einer'], ['2', 'Zwei'], ['3', 'Drei'], ['auto', 'Automatisch (mehr bei mehr Leistung)']]),
+    vSel('line_corners', 'Ecken der Linien', [['round', 'Abgerundet'], ['square', 'Eckig (rechte Winkel)']]),
+    vB('line_gradient', 'Linien mit Farbverlauf (von Quelle zu Ziel)'),
+    vB('line_labels', 'Schwebende Wert-Labels an allen Linien (einzeln pro Kreis per Schalter dort)'),
+    vB('line_width', 'Linien werden mit der Leistung dicker'),
+    vN('line_width_max', 'Maximale Linienst\u00e4rke', 'Standard 6', { min: 3, max: 12 }),
+    vN('speed_max_w', 'Punkte am schnellsten bei (W)', 'Standard 3000', { min: 100, step: 100 }),
+  ]),
+  vX('', 'Aussehen: Leuchten, Zahlen, Antippen', [
+    vB('glow', 'Aktive Kreise leuchten'),
+    vB('pulse', 'Starke Verbraucher pulsieren'),
+    vN('pulse_above_w', 'Pulsieren ab (W)', 'Standard 1000', { min: 0, step: 100 }),
+    vB('gradient', 'Farbverlauf und Schatten in den Kreisen'),
+    vN('number_scale', 'Gr\u00f6\u00dfe der Zahlen in den Kreisen', '1 = normal, 0.5 bis 1.6', { min: 0.5, max: 1.6, step: 0.1 }),
+    vB('number_animation', 'Zahlen z\u00e4hlen sanft zum neuen Wert'),
+    vB('tap_action', 'Antippen \u00f6ffnet den Verlauf des Sensors'),
     vB('dim_idle', 'Ger\u00e4te mit 0 W ausgrauen'),
     vG(vN('idle_below', 'Als \u201eaus\u201c gilt unter (W)', 'Standard 1', { min: 0 }), vN('idle_opacity', 'Deckkraft ausgegraut', '0 bis 1, Standard 0.4', { min: 0, max: 1, step: 0.1 })),
-    vN('speed_max_w', 'Punkte am schnellsten bei (W)', 'Standard 3000', { min: 100, step: 100 }),
-    vB('grid_to_battery', 'Netzbezug darf auch die Batterie laden (Punkte)'),
-    vT('devices_name', 'Name der Zone f\u00fcr \u201eGer\u00e4te direkt am Haus\u201c', 'Nur wenn zus\u00e4tzlich Zonen existieren, Standard: Sonstige'),
+  ]),
+  vX('calm', 'Ruhemodus (z. B. nachts)', [
+    vB('always', 'Immer ruhig'),
+    vE('entity', 'Sensor/Schalter: ruhig, solange \u201ean\u201c', 'z. B. input_boolean oder sun.sun (ruhig unter dem Horizont)'),
+    vG({ name: 'from', label: 'Ruhig von', selector: { time: {} } }, { name: 'to', label: 'bis', selector: { time: {} } }),
+    vSel('dots', 'Punkte im Ruhemodus', [['slow', 'Langsam (Standard)'], ['off', 'Aus'], ['normal', 'Normal']]),
+    vN('dim', 'Helligkeit der Karte', '0.2 bis 1, Standard 0.75', { min: 0.2, max: 1, step: 0.05 }),
+    vB('follow_system', 'Auch ruhig, wenn das Ger\u00e4t \u201eAnimationen reduzieren\u201c eingestellt hat'),
+  ]),
+  vX('', 'Grenzwerte (Warnfarbe)', [
+    vB('limit_colors', 'Kreise und Werte rot f\u00e4rben, wenn ein Grenzwert verletzt wird'),
+    vX('limits', 'Grenzwerte', [
+      vG(vN('voltage_min', 'Spannung min. (V)', 'Standard 207'), vN('voltage_max', 'Spannung max. (V)', 'Standard 253')),
+      vN('current_max', 'Strom max. (A)', 'Standard: keine Grenze'),
+      vG(vN('frequency_min', 'Frequenz min. (Hz)', 'Standard 49.8', { step: 0.1 }), vN('frequency_max', 'Frequenz max. (Hz)', 'Standard 50.2', { step: 0.1 })),
+      vT('color', 'Warnfarbe', 'Standard #e53935'),
+    ]),
   ]),
 ];
 function vSel(name, label, opts) {
@@ -3582,6 +3770,25 @@ function vawToForm(cfg) {
   if (d.grid.price_circle === undefined) d.grid.price_circle = true;
   d.home = { ...(d.home || {}) };
   if (d.home.ring === undefined) d.home.ring = true;
+  // Durchmesser-Schieber zeigen den Standardwert 1 (wird beim Speichern wieder entfernt)
+  ['grid', 'solar', 'battery', 'home'].forEach((k) => { if (d[k] && typeof d[k] === 'object') { if (d[k].size === undefined) d[k].size = 1; if (d[k].font_size === undefined) d[k].font_size = 1; } });
+  const sz1 = (a) => {
+    if (!Array.isArray(a)) return;
+    a.forEach((o) => {
+      if (o && typeof o === 'object') {
+        if (o.size === undefined) o.size = 1;
+        if (o.font_size === undefined) o.font_size = 1;
+        sz1(o.children);
+        sz1(o.devices);
+      }
+    });
+  };
+  sz1(d.zones);
+  sz1(d.devices);
+  sz1(d.status);
+  sz1(d.grid && d.grid.phases);
+  sz1(d.solar && d.solar.children);
+  sz1(d.battery && d.battery.children);
   return d;
 }
 
@@ -3617,12 +3824,24 @@ function vawFromForm(data, prev) {
   if (d.node_size === '' || d.node_size === 1) delete d.node_size;
   if (d.compact === 'off') delete d.compact;
   if (d.layout_assistant === false) delete d.layout_assistant;
-  ['zone_frames', 'time_travel', 'line_labels'].forEach((k) => { if (d[k] === false) delete d[k]; });
+  if (d.rest === false) delete d.rest;
+  ['zone_frames', 'time_travel', 'line_labels', 'font_follow_size'].forEach((k) => { if (d[k] === false) delete d[k]; });
   if (Array.isArray(d.custom_icons)) {
     const m = {};
     d.custom_icons.forEach((i) => { if (i && i.name && i.url) m[i.name] = i.tint ? { url: i.url, tint: true } : i.url; });
     if (Object.keys(m).length) d.custom_icons = m;
     else delete d.custom_icons;
+  }
+  {
+    const strip1 = (o) => {
+      if (Array.isArray(o)) o.forEach(strip1);
+      else if (o && typeof o === 'object') {
+        if (o.size === 1 || o.size === '') delete o.size;
+        if (o.font_size === 1 || o.font_size === '') delete o.font_size;
+        Object.keys(o).forEach((k) => strip1(o[k]));
+      }
+    };
+    ['grid', 'solar', 'battery', 'home', 'zones', 'devices', 'status'].forEach((k) => strip1(d[k]));
   }
   if (d.sparkline === false) delete d.sparkline;
   if (d.line_style === 'solid') delete d.line_style;
@@ -3685,7 +3904,7 @@ class FlowCardVAWEditor extends HTMLElement {
     if (this._form) return;
     const note = document.createElement('div');
     note.style.cssText = 'font-size:12px;opacity:.7;margin:0 0 12px';
-    note.textContent = 'Flow Card Version 1.1.0 \u00b7 Ansichten (views) und Positionen (positions) sowie Sonderf\u00e4lle (secondary, extra, Namen der Ringe usw.) bleiben erhalten und lassen sich im Code-Editor (\u201eYAML\u201c) erg\u00e4nzen.';
+    note.textContent = 'Flow Card Version 1.1.1 \u00b7 Ansichten (views) und Positionen (positions) sowie Sonderf\u00e4lle (secondary, extra, Namen der Ringe usw.) bleiben erhalten und lassen sich im Code-Editor (\u201eYAML\u201c) erg\u00e4nzen.';
     const form = document.createElement('ha-form');
     form.schema = VAW_SCHEMA;
     form.hass = this._hass;
@@ -3704,11 +3923,11 @@ class FlowCardVAWEditor extends HTMLElement {
 }
 customElements.define('flow-card-vaw-editor', FlowCardVAWEditor);
 
-console.info('%c FLOW-CARD-VAW %c Version 1.1.0 ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
+console.info('%c FLOW-CARD-VAW %c Version 1.1.1 ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
 customElements.define('flow-card-vaw', FlowCardVAW);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'flow-card-vaw',
   name: 'Flow Card (W / A / V)',
-  description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.1.0)',
+  description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.1.1)',
 });
