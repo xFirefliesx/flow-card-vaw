@@ -1,3 +1,9 @@
+/* Flow Card (W / A / V) - TESTVERSION (DEV)
+ * Kartentyp: custom:flow-card-vaw-dev   (laeuft parallel zur normalen Karte flow-card-vaw)
+ * Datei: /config/www/flow-card-vaw-dev.js, Ressource: /local/flow-card-vaw-dev.js?v=N (JavaScript-Modul)
+ * Quelle: Branch dev im Repo flow-card-vaw, Stand main 1.1.1
+ */
+(() => {
 const ST_ICONS = {
   garage: ['mdi:garage', 'mdi:garage-open'],
   window: ['mdi:window-closed', 'mdi:window-open'],
@@ -3931,3 +3937,4 @@ window.customCards.push({
   name: 'Flow Card (W / A / V) DEV',
   description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.1.1)',
 });
+})();
