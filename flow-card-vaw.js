@@ -108,6 +108,34 @@ class FlowCardVAW extends HTMLElement {
     }
   }
 
+  // Layout: 'horizontal' oder 'vertical'. layout kann auch je Fenster-Ausrichtung
+  // gesetzt werden: layout: {v: <hochkant>, h: <quer>}. Statt v/h gehen auch
+  // portrait/hochkant bzw. landscape/quer. Fehlt eine Seite, gilt der naheliegende
+  // Standard: hochkant senkrecht, quer waagrecht.
+  _layout() {
+    const c = this._c || {};
+    const o = this._orient();
+    const norm = (x) => {
+      const t = String(x === undefined || x === null ? '' : x).trim().toLowerCase();
+      if (t === 'vertical' || t === 'senkrecht') return 'vertical';
+      if (t === 'horizontal' || t === 'waagrecht') return 'horizontal';
+      return null;
+    };
+    const auto = () => (o === 'v' ? 'vertical' : 'horizontal');
+    const l = c.layout;
+    if (l && typeof l === 'object') {
+      const side = o === 'v' ? [l.v, l.portrait, l.hochkant] : [l.h, l.landscape, l.quer];
+      for (let i = 0; i < side.length; i++) {
+        const n = norm(side[i]);
+        if (n) return n;
+      }
+      return auto();
+    }
+    const t = String(l === undefined || l === null ? '' : l).trim().toLowerCase();
+    if (t === 'orientation' || t === 'auto') return auto();
+    return norm(l) || 'horizontal';
+  }
+
   _posKeyBase() {
     const c0 = this._cfg0 || {};
     const v = this._viewList()[this._vi || 0];
@@ -194,7 +222,7 @@ class FlowCardVAW extends HTMLElement {
         if (v[k] === null) delete base[k];
         else base[k] = v[k];
       });
-      // show: nur diese Teile zeigen (grid, solar, battery, devices, zones oder Zonen-Namen); hide: diese ausblenden. Das Haus bleibt als Mitte immer sichtbar.
+      // show: nur diese Teile zeigen (grid, solar, battery, devices, rest, status, status_circles, status_chips, zones oder Zonen-Namen); hide: diese ausblenden. Das Haus bleibt als Mitte immer sichtbar.
       const lst = (x) => (Array.isArray(x) ? x : typeof x === 'string' && x ? [x] : []).map((t) => String(t).trim().toLowerCase());
       const sh = lst(v.show);
       const hi = lst(v.hide);
@@ -206,6 +234,28 @@ class FlowCardVAW extends HTMLElement {
           return sh.includes(key) || !!(n && sh.includes(n));
         };
         ['grid', 'solar', 'battery', 'devices'].forEach((k) => { if (!vis(k)) delete base[k]; });
+        // Sammelkreis "Rest" gehört zu den Geräten: ohne sie fällt er weg, außer er steht selbst in show
+        if (base.rest !== undefined && !(sh.length && sh.includes('rest')) && (hi.includes('rest') || !vis('devices'))) delete base.rest;
+        // Status: ganz (status) oder getrennt - nur die Kreise unten (status_circles), nur die Chips in Kopf- und Infozeile (status_chips)
+        if (base.status !== undefined) {
+          const named = (k) => sh.includes(k) || hi.includes(k);
+          const stAll = vis('status');
+          const stCirc = named('status_circles') ? vis('status_circles') : stAll;
+          const stChip = named('status_chips') ? vis('status_chips') : stAll;
+          if (!stCirc && !stChip) delete base.status;
+          else if (!stCirc || !stChip) {
+            const keep = (Array.isArray(base.status) ? base.status : [])
+              .map((e) => {
+                const o = typeof e === 'string' ? { entity: e } : { ...e };
+                const pl = Array.isArray(o.show) ? o.show : o.show ? [o.show] : ['header'];
+                o.show = pl.filter((x) => (String(x).trim().toLowerCase() === 'circles' ? stCirc : stChip));
+                return o;
+              })
+              .filter((o) => o.show.length);
+            if (keep.length) base.status = keep;
+            else delete base.status;
+          }
+        }
         if (Array.isArray(base.zones)) {
           const zs = base.zones.filter((z) => z && vis('zones', z.name));
           if (zs.length) base.zones = zs;
@@ -775,7 +825,7 @@ class FlowCardVAW extends HTMLElement {
     if (groups.length && devs.length) {
       groups.push({ z: { name: c.devices_name || 'Sonstige', icon: 'mdi:dots-horizontal-circle-outline' }, devs });
     }
-    const vert = c.layout === 'vertical';
+    const vert = this._layout() === 'vertical';
     // Phasen (L1/L2/L3) als kleine Kreise \u00fcber einer Zone (im senkrechten Layout links daneben): zones[].phases (max. 6)
     const phasesOf = (z) => (Array.isArray(z.phases) ? z.phases.slice(0, 6) : []);
     const PH = 80; // Platz \u00fcber einer Zone mit Phasen (waagrechtes Layout)
@@ -3555,12 +3605,15 @@ function vawRingEl(shape, cx, cy, r, off, attrs) {
   }
   return `<circle cx="${cx}" cy="${cy}" r="${r + off}" ${attrs}${/stroke-dasharray/.test(attrs) ? ` transform="rotate(-90 ${cx} ${cy})"` : ''}/>`;
 }
+const VAW_LAY_OPTS = [{ value: 'horizontal', label: 'Waagrecht' }, { value: 'vertical', label: 'Senkrecht' }];
+const VAW_LAY_VIEW_OPTS = VAW_LAY_OPTS.concat([{ value: 'orientation', label: 'Je nach Ausrichtung des Fensters' }]);
 const VAW_SCHEMA = [
   vX('', 'Karte: Titel, Layout, Bedienung', [
     vT('title', 'Titel', 'Erscheint links oben in der Karte'),
     vG(vE('date', 'Datum-Sensor', 'z. B. sensor.date'), vE('time', 'Uhrzeit-Sensor', 'z. B. sensor.time')),
     vB('time_seconds', 'Uhrzeit mit Sekunden anzeigen'),
-  vSel('layout', 'Layout', [['horizontal', 'Waagrecht'], ['vertical', 'Senkrecht (baut sich nach unten auf)']]),
+  vSel('layout', 'Layout', [['horizontal', 'Waagrecht'], ['vertical', 'Senkrecht (baut sich nach unten auf)'], ['orientation', 'Je nach Ausrichtung des Fensters']]),
+    vG(vSel('layout_v', 'Fenster hochkant', [['horizontal', 'Waagrecht'], ['vertical', 'Senkrecht']]), vSel('layout_h', 'Fenster quer', [['horizontal', 'Waagrecht'], ['vertical', 'Senkrecht']])),
     vSel('compact', 'Kompakter Modus', [['off', 'Aus'], ['auto', 'Automatisch bei schmaler Karte'], ['on', 'Immer']]),
     vB('fullscreen_button', 'Vollbild-Knopf anzeigen'),
     vB('zoom', 'Zoomen und Verschieben (Strg + Mausrad, Pinch, Kn\u00f6pfe + / \u2212)'),
@@ -3569,7 +3622,10 @@ const VAW_SCHEMA = [
     vList('views', 'Ansichten (Tabs, ab 2 Eintr\u00e4gen sichtbar)', {
       name: vF('Name', vText),
       icon: vF('Icon', { icon: {} }),
-      show: vF('Nur zeigen (leer = alles): grid, solar, battery, devices, zones oder ein Zonen-Name', { select: { multiple: true, custom_value: true, options: [{ value: 'grid', label: 'Netz' }, { value: 'solar', label: 'Solar' }, { value: 'battery', label: 'Batterie' }, { value: 'zones', label: 'Alle Zonen' }, { value: 'devices', label: 'Ger\u00e4te' }] } }),
+      layout: vF('Layout dieser Ansicht (leer = wie die Karte)', { select: { mode: 'dropdown', options: VAW_LAY_VIEW_OPTS } }),
+      layout_v: vF('… dabei Fenster hochkant', { select: { mode: 'dropdown', options: VAW_LAY_OPTS } }),
+      layout_h: vF('… dabei Fenster quer', { select: { mode: 'dropdown', options: VAW_LAY_OPTS } }),
+      show: vF('Nur zeigen (leer = alles): grid, solar, battery, devices, rest, status, status_circles, status_chips, zones oder ein Zonen-Name', { select: { multiple: true, custom_value: true, options: [{ value: 'grid', label: 'Netz' }, { value: 'solar', label: 'Solar' }, { value: 'battery', label: 'Batterie' }, { value: 'zones', label: 'Alle Zonen' }, { value: 'devices', label: 'Ger\u00e4te' }, { value: 'rest', label: 'Sammelkreis Rest' }, { value: 'status', label: 'Status: Kreise und Chips' }, { value: 'status_circles', label: 'Status: nur die Kreise unten' }, { value: 'status_chips', label: 'Status: nur die Chips oben' }] } }),
     }, 'name'),
     vT('default_view', 'Startansicht (Name; leer = erste)'),
   ]),
@@ -3729,6 +3785,41 @@ VAW_SCHEMA.forEach((s) => { if (s.type === 'expandable' && s.name === '') { s.fl
 const VAW_MAIN = ['grid', 'solar', 'battery', 'home'];
 const VAW_ON = ['line_width', 'glow', 'pulse', 'gradient', 'tap_action', 'limit_colors', 'zoom']; // Optionen, die standardm\u00e4\u00dfig an sind
 
+// Layout je Fenster-Ausrichtung: layout: {v, h} <-> die drei Formularfelder
+// layout, layout_v und layout_h. Gilt für die Karte und je Ansicht (Tab).
+function vawLayPick(a) {
+  for (let i = 0; i < a.length; i++) {
+    const t = String(a[i] === undefined || a[i] === null ? '' : a[i]).trim().toLowerCase();
+    if (t === 'vertical' || t === 'senkrecht' || t === 'v') return 'vertical';
+    if (t === 'horizontal' || t === 'waagrecht' || t === 'h') return 'horizontal';
+  }
+  return null;
+}
+function vawLayToForm(o) {
+  if (!o || typeof o !== 'object') return;
+  const L = o.layout;
+  if (L && typeof L === 'object') {
+    o.layout_v = vawLayPick([L.v, L.portrait, L.hochkant]) || 'vertical';
+    o.layout_h = vawLayPick([L.h, L.landscape, L.quer]) || 'horizontal';
+    o.layout = 'orientation';
+  }
+  if (o.layout === 'orientation') {
+    if (o.layout_v === undefined) o.layout_v = 'vertical';
+    if (o.layout_h === undefined) o.layout_h = 'horizontal';
+  }
+}
+function vawLayFromForm(o) {
+  if (!o || typeof o !== 'object') return;
+  if (o.layout === 'orientation') {
+    o.layout = {
+      v: o.layout_v === 'horizontal' ? 'horizontal' : 'vertical',
+      h: o.layout_h === 'vertical' ? 'vertical' : 'horizontal',
+    };
+  }
+  delete o.layout_v;
+  delete o.layout_h;
+}
+
 // Konfiguration -> Formulardaten (Kurzformen in Listen werden zu Objekten, Standardwerte sichtbar gemacht)
 function vawToForm(cfg) {
   const d = JSON.parse(JSON.stringify(cfg || {}));
@@ -3770,6 +3861,8 @@ function vawToForm(cfg) {
     Object.values(o).forEach(walk);
   };
   walk(d);
+  vawLayToForm(d);
+  if (Array.isArray(d.views)) d.views.forEach(vawLayToForm);
   if (d.fullscreen_button === undefined) d.fullscreen_button = true;
   if (d.dim_idle === undefined) d.dim_idle = true;
   if (d.theme === undefined) d.theme = 'none';
@@ -3843,6 +3936,8 @@ function vawFromForm(data, prev) {
     });
   }
   if (d.theme === 'none') delete d.theme;
+  vawLayFromForm(d);
+  if (Array.isArray(d.views)) d.views.forEach(vawLayFromForm);
   if (d.fullscreen_button === true) delete d.fullscreen_button;
   if (d.dim_idle === true) delete d.dim_idle;
   if (d.background === 'default') delete d.background;
@@ -3934,7 +4029,7 @@ class FlowCardVAWEditor extends HTMLElement {
     if (this._form) return;
     const note = document.createElement('div');
     note.style.cssText = 'font-size:12px;opacity:.7;margin:0 0 12px';
-    note.textContent = 'Flow Card Version 1.2.1 \u00b7 Ansichten (views) und Positionen (positions) sowie Sonderf\u00e4lle (secondary, extra, Namen der Ringe usw.) bleiben erhalten und lassen sich im Code-Editor (\u201eYAML\u201c) erg\u00e4nzen.';
+    note.textContent = 'Flow Card Version 1.2.2 \u00b7 Ansichten (views) und Positionen (positions) sowie Sonderf\u00e4lle (secondary, extra, Namen der Ringe usw.) bleiben erhalten und lassen sich im Code-Editor (\u201eYAML\u201c) erg\u00e4nzen.';
     const form = document.createElement('ha-form');
     form.schema = VAW_SCHEMA;
     form.hass = this._hass;
@@ -3953,11 +4048,11 @@ class FlowCardVAWEditor extends HTMLElement {
 }
 customElements.define('flow-card-vaw-editor', FlowCardVAWEditor);
 
-console.info('%c FLOW-CARD-VAW %c Version 1.2.1 ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
+console.info('%c FLOW-CARD-VAW %c Version 1.2.2 ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
 customElements.define('flow-card-vaw', FlowCardVAW);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'flow-card-vaw',
   name: 'Flow Card (W / A / V)',
-  description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.2.1)',
+  description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.2.2)',
 });

@@ -60,6 +60,19 @@ Layout:
                         # darunter das Haus, darunter Zonen bzw. Geräte
                         # (ohne die Zeile: wie bisher waagrecht)
 
+  Layout je Ausrichtung des Fensters (hochkant/quer) statt eines festen Layouts:
+  layout:
+    v: vertical         # Fenster hochkant (Höhe größer als Breite), z. B. am Handy
+    h: horizontal       # Fenster quer, z. B. am PC oder Tablet
+                        # Statt v/h gehen auch portrait/hochkant bzw. landscape/quer.
+                        # Fehlt eine Seite, gilt der naheliegende Standard:
+                        # hochkant senkrecht, quer waagrecht.
+                        # Beim Drehen wechselt die Karte sofort, ohne Neuladen; der
+                        # Layout-Assistent speichert die Positionen ohnehin getrennt
+                        # je Ausrichtung.
+                        # layout lässt sich auch je Ansicht (Tab) setzen, siehe
+                        # „Ansichten (Tabs)“ weiter unten.
+
 Zonen (z. B. Stockwerke) vom Haus, mit eigenen Geräten (bis 6 Zonen, je bis 8 Geräte):
   zones:
     - name: 1. Stock
@@ -346,10 +359,21 @@ Ansichten (Tabs, ab 2 Einträgen sichtbar):
       icon: mdi:flash
     - name: Solar
       icon: mdi:solar-power
-      show: [solar]       # nur diese Teile zeigen: grid, solar, battery, devices, zones oder ein Zonen-Name (das Haus bleibt)
+      show: [solar]       # nur diese Teile zeigen: grid, solar, battery, devices, rest, status, zones oder ein Zonen-Name (das Haus bleibt)
+                          # der Sammelkreis „Rest“ folgt den Geräten; mit rest in show/hide steuerst du ihn einzeln
+                          # status meint die Statuskreise und -chips (status:) – ohne Eintrag in show sind sie weg
+                          # getrennt: status_circles = nur die Kreise unten, status_chips = nur die Chips in Kopf- und Infozeile
+                          # z. B. hide: [status_circles] lässt die Chips oben stehen und blendet die Kreise aus
       # hide: [battery]   # oder bestimmte Teile ausblenden
       compact: "on"       # jede andere Karten-Option kann pro Ansicht überschrieben werden, null entfernt sie
       positions: {solar: {x: 40, y: 20}}
+    - name: Geräte
+      layout: vertical    # Layout je Ansicht: diese immer senkrecht,
+                          # unabhängig vom Layout der Karte
+    - name: Zonen
+      layout:             # auch je Ansicht ist das Layout pro Ausrichtung möglich
+        v: vertical
+        h: horizontal
 
 Layout-Assistent:
   layout_assistant: true  # Knopf oben rechts; Kreise ziehen, Positionen bleiben pro Benutzer und Ansicht gespeichert
