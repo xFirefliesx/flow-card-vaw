@@ -228,7 +228,7 @@ class FlowCardVAW extends HTMLElement {
         if (v[k] === null) delete base[k];
         else base[k] = v[k];
       });
-      // show: nur diese Teile zeigen (grid, solar, battery, devices, rest, zones oder Zonen-Namen); hide: diese ausblenden. Das Haus bleibt als Mitte immer sichtbar.
+      // show: nur diese Teile zeigen (grid, solar, battery, devices, rest, status, zones oder Zonen-Namen); hide: diese ausblenden. Das Haus bleibt als Mitte immer sichtbar.
       const lst = (x) => (Array.isArray(x) ? x : typeof x === 'string' && x ? [x] : []).map((t) => String(t).trim().toLowerCase());
       const sh = lst(v.show);
       const hi = lst(v.hide);
@@ -239,7 +239,7 @@ class FlowCardVAW extends HTMLElement {
           if (!sh.length) return true;
           return sh.includes(key) || !!(n && sh.includes(n));
         };
-        ['grid', 'solar', 'battery', 'devices'].forEach((k) => { if (!vis(k)) delete base[k]; });
+        ['grid', 'solar', 'battery', 'devices', 'status'].forEach((k) => { if (!vis(k)) delete base[k]; });
         // Sammelkreis "Rest" gehört zu den Geräten: ohne sie fällt er weg, außer er steht selbst in show
         if (base.rest !== undefined && !(sh.length && sh.includes('rest')) && (hi.includes('rest') || !vis('devices'))) delete base.rest;
         if (Array.isArray(base.zones)) {
@@ -3611,7 +3611,7 @@ const VAW_SCHEMA = [
       layout: vF('Layout dieser Ansicht (leer = wie die Karte)', { select: { mode: 'dropdown', options: VAW_LAY_VIEW_OPTS } }),
       layout_v: vF('… dabei Fenster hochkant', { select: { mode: 'dropdown', options: VAW_LAY_OPTS } }),
       layout_h: vF('… dabei Fenster quer', { select: { mode: 'dropdown', options: VAW_LAY_OPTS } }),
-      show: vF('Nur zeigen (leer = alles): grid, solar, battery, devices, rest, zones oder ein Zonen-Name', { select: { multiple: true, custom_value: true, options: [{ value: 'grid', label: 'Netz' }, { value: 'solar', label: 'Solar' }, { value: 'battery', label: 'Batterie' }, { value: 'zones', label: 'Alle Zonen' }, { value: 'devices', label: 'Ger\u00e4te' }, { value: 'rest', label: 'Sammelkreis Rest' }] } }),
+      show: vF('Nur zeigen (leer = alles): grid, solar, battery, devices, rest, status, zones oder ein Zonen-Name', { select: { multiple: true, custom_value: true, options: [{ value: 'grid', label: 'Netz' }, { value: 'solar', label: 'Solar' }, { value: 'battery', label: 'Batterie' }, { value: 'zones', label: 'Alle Zonen' }, { value: 'devices', label: 'Ger\u00e4te' }, { value: 'rest', label: 'Sammelkreis Rest' }, { value: 'status', label: 'Statuskreise und -chips' }] } }),
     }, 'name'),
     vT('default_view', 'Startansicht (Name; leer = erste)'),
   ]),
