@@ -362,6 +362,8 @@ Ansichten (Tabs, ab 2 Einträgen sichtbar):
       show: [solar]       # nur diese Teile zeigen: grid, solar, battery, devices, rest, status, zones oder ein Zonen-Name (das Haus bleibt)
                           # der Sammelkreis „Rest“ folgt den Geräten; mit rest in show/hide steuerst du ihn einzeln
                           # status meint die Statuskreise und -chips (status:) – ohne Eintrag in show sind sie weg
+                          # getrennt: status_circles = nur die Kreise unten, status_chips = nur die Chips in Kopf- und Infozeile
+                          # z. B. hide: [status_circles] lässt die Chips oben stehen und blendet die Kreise aus
       # hide: [battery]   # oder bestimmte Teile ausblenden
       compact: "on"       # jede andere Karten-Option kann pro Ansicht überschrieben werden, null entfernt sie
       positions: {solar: {x: 40, y: 20}}

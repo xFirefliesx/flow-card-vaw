@@ -6,7 +6,7 @@
 - A missing side falls back to the obvious default (portrait vertical, landscape horizontal); a plain `layout: vertical` or `layout: horizontal` keeps working unchanged
 - Rotating the device switches the layout right away, without a reload, and loads the positions the layout assistant already stores separately per orientation
 - Visual editor: Layout has a third choice, “Je nach Ausrichtung des Fensters”, plus one select each for portrait and landscape
-- Views can now show or hide the status circles and chips too: `status` works in `show` and `hide` like the other parts. Note that a view with a `show` list that does not name `status` no longer shows them
+- Views can now show or hide the status entries too: `status` works in `show` and `hide` like the other parts, and `status_circles` (the circles at the bottom) and `status_chips` (the chips in the header and info line) address the two halves on their own. Note that a view with a `show` list that does not name any of them no longer shows the status entries
 - Fix: the `rest` circle stayed visible in views that hide the devices (`show: [grid, solar, battery]` or `hide: [devices]`), showing the whole house consumption. It now follows the devices, and `rest` can be named in `show`/`hide` to control it on its own
 - Layout per view (tab): a view can set `layout` itself, as a single word or as the `{v, h}` object, and it overrides the card. The visual editor now has those three fields on every view as well, so e.g. the “Alles” tab can follow the orientation while “Geräte” stays vertical
 

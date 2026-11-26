@@ -1,7 +1,7 @@
 /* Flow Card (W / A / V) - TESTVERSION (DEV)
  * Kartentyp: custom:flow-card-vaw-dev   (laeuft parallel zur normalen Karte flow-card-vaw)
  * Datei: /config/www/flow-card-vaw-dev.js, Ressource: /local/flow-card-vaw-dev.js?v=N (JavaScript-Modul)
- * Quelle: Branch dev im Repo flow-card-vaw, Stand main 1.2.1
+ * Quelle: Branch dev im Repo flow-card-vaw, Stand main 1.2.2
  */
 (() => {
 const ST_ICONS = {
@@ -228,7 +228,7 @@ class FlowCardVAW extends HTMLElement {
         if (v[k] === null) delete base[k];
         else base[k] = v[k];
       });
-      // show: nur diese Teile zeigen (grid, solar, battery, devices, rest, status, zones oder Zonen-Namen); hide: diese ausblenden. Das Haus bleibt als Mitte immer sichtbar.
+      // show: nur diese Teile zeigen (grid, solar, battery, devices, rest, status, status_circles, status_chips, zones oder Zonen-Namen); hide: diese ausblenden. Das Haus bleibt als Mitte immer sichtbar.
       const lst = (x) => (Array.isArray(x) ? x : typeof x === 'string' && x ? [x] : []).map((t) => String(t).trim().toLowerCase());
       const sh = lst(v.show);
       const hi = lst(v.hide);
@@ -239,9 +239,29 @@ class FlowCardVAW extends HTMLElement {
           if (!sh.length) return true;
           return sh.includes(key) || !!(n && sh.includes(n));
         };
-        ['grid', 'solar', 'battery', 'devices', 'status'].forEach((k) => { if (!vis(k)) delete base[k]; });
+        ['grid', 'solar', 'battery', 'devices'].forEach((k) => { if (!vis(k)) delete base[k]; });
         // Sammelkreis "Rest" gehört zu den Geräten: ohne sie fällt er weg, außer er steht selbst in show
         if (base.rest !== undefined && !(sh.length && sh.includes('rest')) && (hi.includes('rest') || !vis('devices'))) delete base.rest;
+        // Status: ganz (status) oder getrennt - nur die Kreise unten (status_circles), nur die Chips in Kopf- und Infozeile (status_chips)
+        if (base.status !== undefined) {
+          const named = (k) => sh.includes(k) || hi.includes(k);
+          const stAll = vis('status');
+          const stCirc = named('status_circles') ? vis('status_circles') : stAll;
+          const stChip = named('status_chips') ? vis('status_chips') : stAll;
+          if (!stCirc && !stChip) delete base.status;
+          else if (!stCirc || !stChip) {
+            const keep = (Array.isArray(base.status) ? base.status : [])
+              .map((e) => {
+                const o = typeof e === 'string' ? { entity: e } : { ...e };
+                const pl = Array.isArray(o.show) ? o.show : o.show ? [o.show] : ['header'];
+                o.show = pl.filter((x) => (String(x).trim().toLowerCase() === 'circles' ? stCirc : stChip));
+                return o;
+              })
+              .filter((o) => o.show.length);
+            if (keep.length) base.status = keep;
+            else delete base.status;
+          }
+        }
         if (Array.isArray(base.zones)) {
           const zs = base.zones.filter((z) => z && vis('zones', z.name));
           if (zs.length) base.zones = zs;
@@ -3611,7 +3631,7 @@ const VAW_SCHEMA = [
       layout: vF('Layout dieser Ansicht (leer = wie die Karte)', { select: { mode: 'dropdown', options: VAW_LAY_VIEW_OPTS } }),
       layout_v: vF('… dabei Fenster hochkant', { select: { mode: 'dropdown', options: VAW_LAY_OPTS } }),
       layout_h: vF('… dabei Fenster quer', { select: { mode: 'dropdown', options: VAW_LAY_OPTS } }),
-      show: vF('Nur zeigen (leer = alles): grid, solar, battery, devices, rest, status, zones oder ein Zonen-Name', { select: { multiple: true, custom_value: true, options: [{ value: 'grid', label: 'Netz' }, { value: 'solar', label: 'Solar' }, { value: 'battery', label: 'Batterie' }, { value: 'zones', label: 'Alle Zonen' }, { value: 'devices', label: 'Ger\u00e4te' }, { value: 'rest', label: 'Sammelkreis Rest' }, { value: 'status', label: 'Statuskreise und -chips' }] } }),
+      show: vF('Nur zeigen (leer = alles): grid, solar, battery, devices, rest, status, status_circles, status_chips, zones oder ein Zonen-Name', { select: { multiple: true, custom_value: true, options: [{ value: 'grid', label: 'Netz' }, { value: 'solar', label: 'Solar' }, { value: 'battery', label: 'Batterie' }, { value: 'zones', label: 'Alle Zonen' }, { value: 'devices', label: 'Ger\u00e4te' }, { value: 'rest', label: 'Sammelkreis Rest' }, { value: 'status', label: 'Status: Kreise und Chips' }, { value: 'status_circles', label: 'Status: nur die Kreise unten' }, { value: 'status_chips', label: 'Status: nur die Chips oben' }] } }),
     }, 'name'),
     vT('default_view', 'Startansicht (Name; leer = erste)'),
   ]),
