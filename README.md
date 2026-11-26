@@ -30,9 +30,10 @@ If you enjoy my work and would like to support future projects, consider buying 
 
 ### HACS (recommended)
 
-1. HACS → three dots → **Custom repositories**
-2. Repository: `https://github.com/xFirefliesx/flow-card-vaw`, category **Dashboard**
-3. Download **Flow Card (W / A / V)**, then reload the browser.
+1. Open **HACS** and search for **Flow Card (W / A / V)**.
+2. Download the card, then reload the browser.
+
+Not listed yet? Add it manually: HACS → three dots → **Custom repositories** → `https://github.com/xFirefliesx/flow-card-vaw`, category **Dashboard**.
 
 HACS adds the resource automatically. If you use YAML dashboards, add it yourself:
 
@@ -102,7 +103,7 @@ status:
     icon: mdi:radiator
 ```
 
-![Status](images/status.png)
+![Status](status.png)
 
 State texts such as `on/off`, `open/closed`, `opening/closing`, `locked/unlocked` and German texts (`geöffnet`, `geschlossen`, `öffnet`, `schließt`) are recognised. Use `open_states` / `closed_states` for your own texts.
 
