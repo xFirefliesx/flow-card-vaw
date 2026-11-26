@@ -3589,6 +3589,8 @@ function vawRingEl(shape, cx, cy, r, off, attrs) {
   }
   return `<circle cx="${cx}" cy="${cy}" r="${r + off}" ${attrs}${/stroke-dasharray/.test(attrs) ? ` transform="rotate(-90 ${cx} ${cy})"` : ''}/>`;
 }
+const VAW_LAY_OPTS = [{ value: 'horizontal', label: 'Waagrecht' }, { value: 'vertical', label: 'Senkrecht' }];
+const VAW_LAY_VIEW_OPTS = VAW_LAY_OPTS.concat([{ value: 'orientation', label: 'Je nach Ausrichtung des Fensters' }]);
 const VAW_SCHEMA = [
   vX('', 'Karte: Titel, Layout, Bedienung', [
     vT('title', 'Titel', 'Erscheint links oben in der Karte'),
@@ -3604,6 +3606,9 @@ const VAW_SCHEMA = [
     vList('views', 'Ansichten (Tabs, ab 2 Eintr\u00e4gen sichtbar)', {
       name: vF('Name', vText),
       icon: vF('Icon', { icon: {} }),
+      layout: vF('Layout dieser Ansicht (leer = wie die Karte)', { select: { mode: 'dropdown', options: VAW_LAY_VIEW_OPTS } }),
+      layout_v: vF('… dabei Fenster hochkant', { select: { mode: 'dropdown', options: VAW_LAY_OPTS } }),
+      layout_h: vF('… dabei Fenster quer', { select: { mode: 'dropdown', options: VAW_LAY_OPTS } }),
       show: vF('Nur zeigen (leer = alles): grid, solar, battery, devices, zones oder ein Zonen-Name', { select: { multiple: true, custom_value: true, options: [{ value: 'grid', label: 'Netz' }, { value: 'solar', label: 'Solar' }, { value: 'battery', label: 'Batterie' }, { value: 'zones', label: 'Alle Zonen' }, { value: 'devices', label: 'Ger\u00e4te' }] } }),
     }, 'name'),
     vT('default_view', 'Startansicht (Name; leer = erste)'),
@@ -3764,6 +3769,41 @@ VAW_SCHEMA.forEach((s) => { if (s.type === 'expandable' && s.name === '') { s.fl
 const VAW_MAIN = ['grid', 'solar', 'battery', 'home'];
 const VAW_ON = ['line_width', 'glow', 'pulse', 'gradient', 'tap_action', 'limit_colors', 'zoom']; // Optionen, die standardm\u00e4\u00dfig an sind
 
+// Layout je Fenster-Ausrichtung: layout: {v, h} <-> die drei Formularfelder
+// layout, layout_v und layout_h. Gilt für die Karte und je Ansicht (Tab).
+function vawLayPick(a) {
+  for (let i = 0; i < a.length; i++) {
+    const t = String(a[i] === undefined || a[i] === null ? '' : a[i]).trim().toLowerCase();
+    if (t === 'vertical' || t === 'senkrecht' || t === 'v') return 'vertical';
+    if (t === 'horizontal' || t === 'waagrecht' || t === 'h') return 'horizontal';
+  }
+  return null;
+}
+function vawLayToForm(o) {
+  if (!o || typeof o !== 'object') return;
+  const L = o.layout;
+  if (L && typeof L === 'object') {
+    o.layout_v = vawLayPick([L.v, L.portrait, L.hochkant]) || 'vertical';
+    o.layout_h = vawLayPick([L.h, L.landscape, L.quer]) || 'horizontal';
+    o.layout = 'orientation';
+  }
+  if (o.layout === 'orientation') {
+    if (o.layout_v === undefined) o.layout_v = 'vertical';
+    if (o.layout_h === undefined) o.layout_h = 'horizontal';
+  }
+}
+function vawLayFromForm(o) {
+  if (!o || typeof o !== 'object') return;
+  if (o.layout === 'orientation') {
+    o.layout = {
+      v: o.layout_v === 'horizontal' ? 'horizontal' : 'vertical',
+      h: o.layout_h === 'vertical' ? 'vertical' : 'horizontal',
+    };
+  }
+  delete o.layout_v;
+  delete o.layout_h;
+}
+
 // Konfiguration -> Formulardaten (Kurzformen in Listen werden zu Objekten, Standardwerte sichtbar gemacht)
 function vawToForm(cfg) {
   const d = JSON.parse(JSON.stringify(cfg || {}));
@@ -3805,25 +3845,8 @@ function vawToForm(cfg) {
     Object.values(o).forEach(walk);
   };
   walk(d);
-  // Layout je Ausrichtung: layout: {v, h} -> drei Formularfelder
-  if (d.layout && typeof d.layout === 'object') {
-    const pick = (a) => {
-      for (let i = 0; i < a.length; i++) {
-        const t = String(a[i] === undefined || a[i] === null ? '' : a[i]).trim().toLowerCase();
-        if (t === 'vertical' || t === 'senkrecht' || t === 'v') return 'vertical';
-        if (t === 'horizontal' || t === 'waagrecht' || t === 'h') return 'horizontal';
-      }
-      return null;
-    };
-    const L = d.layout;
-    d.layout_v = pick([L.v, L.portrait, L.hochkant]) || 'vertical';
-    d.layout_h = pick([L.h, L.landscape, L.quer]) || 'horizontal';
-    d.layout = 'orientation';
-  }
-  if (d.layout === 'orientation') {
-    if (d.layout_v === undefined) d.layout_v = 'vertical';
-    if (d.layout_h === undefined) d.layout_h = 'horizontal';
-  }
+  vawLayToForm(d);
+  if (Array.isArray(d.views)) d.views.forEach(vawLayToForm);
   if (d.fullscreen_button === undefined) d.fullscreen_button = true;
   if (d.dim_idle === undefined) d.dim_idle = true;
   if (d.theme === undefined) d.theme = 'none';
@@ -3897,15 +3920,8 @@ function vawFromForm(data, prev) {
     });
   }
   if (d.theme === 'none') delete d.theme;
-  // drei Formularfelder -> layout: {v, h}
-  if (d.layout === 'orientation') {
-    d.layout = {
-      v: d.layout_v === 'horizontal' ? 'horizontal' : 'vertical',
-      h: d.layout_h === 'vertical' ? 'vertical' : 'horizontal',
-    };
-  }
-  delete d.layout_v;
-  delete d.layout_h;
+  vawLayFromForm(d);
+  if (Array.isArray(d.views)) d.views.forEach(vawLayFromForm);
   if (d.fullscreen_button === true) delete d.fullscreen_button;
   if (d.dim_idle === true) delete d.dim_idle;
   if (d.background === 'default') delete d.background;

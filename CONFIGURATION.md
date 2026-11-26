@@ -70,6 +70,8 @@ Layout:
                         # Beim Drehen wechselt die Karte sofort, ohne Neuladen; der
                         # Layout-Assistent speichert die Positionen ohnehin getrennt
                         # je Ausrichtung.
+                        # layout lässt sich auch je Ansicht (Tab) setzen, siehe
+                        # „Ansichten (Tabs)“ weiter unten.
 
 Zonen (z. B. Stockwerke) vom Haus, mit eigenen Geräten (bis 6 Zonen, je bis 8 Geräte):
   zones:
@@ -361,6 +363,13 @@ Ansichten (Tabs, ab 2 Einträgen sichtbar):
       # hide: [battery]   # oder bestimmte Teile ausblenden
       compact: "on"       # jede andere Karten-Option kann pro Ansicht überschrieben werden, null entfernt sie
       positions: {solar: {x: 40, y: 20}}
+    - name: Geräte
+      layout: vertical    # Layout je Ansicht: diese immer senkrecht,
+                          # unabhängig vom Layout der Karte
+    - name: Zonen
+      layout:             # auch je Ansicht ist das Layout pro Ausrichtung möglich
+        v: vertical
+        h: horizontal
 
 Layout-Assistent:
   layout_assistant: true  # Knopf oben rechts; Kreise ziehen, Positionen bleiben pro Benutzer und Ansicht gespeichert
