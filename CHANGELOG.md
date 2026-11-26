@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.2 (dev)
+
+- `layout` can now be set per window orientation: `layout: {v: vertical, h: horizontal}` picks the vertical build-down layout while the window is portrait and the horizontal one while it is landscape. `portrait`/`hochkant` and `landscape`/`quer` work as key names too
+- A missing side falls back to the obvious default (portrait vertical, landscape horizontal); a plain `layout: vertical` or `layout: horizontal` keeps working unchanged
+- Rotating the device switches the layout right away, without a reload, and loads the positions the layout assistant already stores separately per orientation
+- Visual editor: Layout has a third choice, “Je nach Ausrichtung des Fensters”, plus one select each for portrait and landscape
+
 ## 1.2.1
 
 - Layout assistant: circle positions are stored separately for portrait and landscape. Moving a circle in one orientation no longer changes the other, and rotating the device loads the matching layout without a reload

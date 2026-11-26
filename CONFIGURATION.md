@@ -60,6 +60,17 @@ Layout:
                         # darunter das Haus, darunter Zonen bzw. Geräte
                         # (ohne die Zeile: wie bisher waagrecht)
 
+  Layout je Ausrichtung des Fensters (hochkant/quer) statt eines festen Layouts:
+  layout:
+    v: vertical         # Fenster hochkant (Höhe größer als Breite), z. B. am Handy
+    h: horizontal       # Fenster quer, z. B. am PC oder Tablet
+                        # Statt v/h gehen auch portrait/hochkant bzw. landscape/quer.
+                        # Fehlt eine Seite, gilt der naheliegende Standard:
+                        # hochkant senkrecht, quer waagrecht.
+                        # Beim Drehen wechselt die Karte sofort, ohne Neuladen; der
+                        # Layout-Assistent speichert die Positionen ohnehin getrennt
+                        # je Ausrichtung.
+
 Zonen (z. B. Stockwerke) vom Haus, mit eigenen Geräten (bis 6 Zonen, je bis 8 Geräte):
   zones:
     - name: 1. Stock
