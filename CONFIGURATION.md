@@ -359,7 +359,8 @@ Ansichten (Tabs, ab 2 Einträgen sichtbar):
       icon: mdi:flash
     - name: Solar
       icon: mdi:solar-power
-      show: [solar]       # nur diese Teile zeigen: grid, solar, battery, devices, zones oder ein Zonen-Name (das Haus bleibt)
+      show: [solar]       # nur diese Teile zeigen: grid, solar, battery, devices, rest, zones oder ein Zonen-Name (das Haus bleibt)
+                          # der Sammelkreis „Rest“ folgt den Geräten; mit rest in show/hide steuerst du ihn einzeln
       # hide: [battery]   # oder bestimmte Teile ausblenden
       compact: "on"       # jede andere Karten-Option kann pro Ansicht überschrieben werden, null entfernt sie
       positions: {solar: {x: 40, y: 20}}
