@@ -158,35 +158,100 @@ class FlowCardVAW extends HTMLElement {
   }
 
   _posSave(clear) {
-    const st = this._posStore();
-    const key = this._posKey();
     const P = this._pos || {};
     const ks = Object.keys(P).filter((k) => P[k] && (P[k].x || P[k].y));
-    if (clear || !ks.length) delete st[key];
-    else {
-      const o = {};
-      ks.forEach((k) => { o[k] = { x: P[k].x || 0, y: P[k].y || 0 }; });
-      st[key] = o;
-    }
-    try { localStorage.setItem('flow-card-vaw-pos', JSON.stringify(st)); } catch (e) { /* ignorieren */ }
-    const h = this._realHass;
+    const o = {};
+    ks.forEach((k) => { o[k] = { x: P[k].x || 0, y: P[k].y || 0 }; });
+    this._posWrite(this._posKey(), clear || !ks.length ? null : o);
+  }
+
+  // Anordnung der aktuellen Ausrichtung in die andere uebernehmen (hochkant <-> quer)
+  _posCopyOther() {
+    const P = this._pos || {};
+    const ks = Object.keys(P).filter((k) => P[k] && (P[k].x || P[k].y));
+    const o = {};
+    ks.forEach((k) => { o[k] = { x: P[k].x || 0, y: P[k].y || 0 }; });
+    this._posWrite(this._posKey(this._orient() === 'v' ? 'h' : 'v'), ks.length ? o : null);
+    this._laFlip = true;
     try {
-      if (h && typeof h.callWS === 'function') Promise.resolve(h.callWS({ type: 'frontend/set_user_data', key: 'flow_card_vaw_positions', value: st })).catch(() => {});
+      clearTimeout(this._laFlipT);
+      this._laFlipT = setTimeout(() => { this._laFlip = false; if (this._la && this.shadowRoot) this._render(); }, 1600);
     } catch (e) { /* ignorieren */ }
   }
 
-  _posLoadWs() {
+  // Einen Eintrag sichern: null bleibt als Loeschvermerk stehen, damit auch das Zuruecksetzen
+  // auf den anderen Geraeten ankommt
+  _posWrite(key, val) {
+    const st = this._posStore();
+    st[key] = val || null;
+    try { localStorage.setItem('flow-card-vaw-pos', JSON.stringify(st)); } catch (e) { /* ignorieren */ }
+    this._posPend = this._posPend || {};
+    this._posPend[key] = val ? JSON.parse(JSON.stringify(val)) : null;
+    this._posPush();
+  }
+
+  // Vor dem Schreiben den Stand aus Home Assistant holen und nur die eigenen Eintraege
+  // darueberlegen. Frueher schob jedes Geraet seinen ganzen lokalen Speicher hoch und
+  // loeschte damit die Positionen der anderen Geraete.
+  _posPush() {
     const h = this._realHass;
-    if (this._posWs || !h || typeof h.callWS !== 'function' || !this._c || this._c.layout_assistant !== true) return;
-    this._posWs = true;
+    if (!h || typeof h.callWS !== 'function' || this._posBusy) {
+      if (this._posBusy) this._posAgain = true;
+      return;
+    }
+    const pend = Object.assign({}, this._posPend || {});
+    if (!Object.keys(pend).length) return;
+    this._posBusy = true;
+    Promise.resolve(h.callWS({ type: 'frontend/get_user_data', key: 'flow_card_vaw_positions' }))
+      .catch(() => null)
+      .then((r) => {
+        const srv = r && r.value && typeof r.value === 'object' ? r.value : {};
+        const out = Object.assign({}, srv);
+        Object.keys(pend).forEach((k) => { out[k] = pend[k] || null; });
+        this._posObj = Object.assign({}, out);
+        try { localStorage.setItem('flow-card-vaw-pos', JSON.stringify(out)); } catch (e) { /* ignorieren */ }
+        return h.callWS({ type: 'frontend/set_user_data', key: 'flow_card_vaw_positions', value: out });
+      })
+      .then(() => {
+        const cur = this._posPend || {};
+        Object.keys(pend).forEach((k) => {
+          if (Object.prototype.hasOwnProperty.call(cur, k) && JSON.stringify(cur[k]) === JSON.stringify(pend[k])) delete cur[k];
+        });
+      })
+      .catch(() => {})
+      .then(() => {
+        this._posBusy = false;
+        if (this._posAgain) {
+          this._posAgain = false;
+          this._posPush();
+        }
+      });
+  }
+
+  // Positionen aus Home Assistant nachladen, auch waehrend die Karte offen ist: sonst sieht
+  // ein zweites Geraet die Aenderung erst nach einem Neuladen der Seite
+  _posLoadWs(force) {
+    const h = this._realHass;
+    if (!h || typeof h.callWS !== 'function' || !this._c || this._c.layout_assistant !== true) return;
+    if (this._posBusy || this._drag) return;
+    const now = Date.now();
+    if (!force) {
+      if (this._posGot && now - this._posGot < 15000) return;
+      try { if (typeof document !== 'undefined' && document.hidden) return; } catch (e) { /* ignorieren */ }
+    }
+    this._posGot = now;
     Promise.resolve(h.callWS({ type: 'frontend/get_user_data', key: 'flow_card_vaw_positions' }))
       .then((r) => {
         const v = r && r.value;
-        if (v && typeof v === 'object' && !this._drag) {
-          this._posObj = Object.assign({}, this._posStore(), v);
-          try { localStorage.setItem('flow-card-vaw-pos', JSON.stringify(this._posObj)); } catch (e) { /* ignorieren */ }
-          this._applyCfg();
-        }
+        if (!v || typeof v !== 'object' || this._drag) return;
+        const key = this._posKey();
+        const before = JSON.stringify(this._posStore()[key] || null);
+        const merged = Object.assign({}, this._posStore(), v);
+        const pend = this._posPend || {};
+        Object.keys(pend).forEach((k) => { merged[k] = pend[k] || null; });
+        this._posObj = merged;
+        try { localStorage.setItem('flow-card-vaw-pos', JSON.stringify(merged)); } catch (e) { /* ignorieren */ }
+        if (JSON.stringify(merged[key] || null) !== before) this._applyCfg();
       })
       .catch(() => {});
   }
@@ -272,8 +337,10 @@ class FlowCardVAW extends HTMLElement {
     // im Layout-Assistenten verschobene Positionen (pro Benutzer in Home Assistant und im Browser gespeichert) haben Vorrang
     if (this._c.layout_assistant === true) {
       const ps = this._posStore();
-      // eigene Positionen der aktuellen Ausrichtung, sonst die alten gemeinsamen
-      const sv = ps[this._posKey()] || ps[this._posKeyBase()];
+      // eigene Positionen der aktuellen Ausrichtung, sonst die alten gemeinsamen.
+      // null ist ein Loeschvermerk (zurueckgesetzt) und faellt nicht auf die alten zurueck.
+      const k0 = this._posKey();
+      const sv = Object.prototype.hasOwnProperty.call(ps, k0) ? ps[k0] : ps[this._posKeyBase()];
       if (sv && typeof sv === 'object') Object.keys(sv).forEach((k) => { if (sv[k] && typeof sv[k] === 'object') this._pos[k] = { x: Number(sv[k].x) || 0, y: Number(sv[k].y) || 0 }; });
     }
     this._render();
@@ -321,6 +388,10 @@ class FlowCardVAW extends HTMLElement {
     };
     window.addEventListener('resize', this._onOrient);
     window.addEventListener('orientationchange', this._onOrient);
+    // zurueck im Fenster: Positionen sofort nachsehen, falls ein anderes Geraet sie geaendert hat
+    this._onVis = () => { try { this._posLoadWs(true); } catch (e) { /* ignorieren */ } };
+    document.addEventListener('visibilitychange', this._onVis);
+    window.addEventListener('focus', this._onVis);
     if (this.shadowRoot && this.shadowRoot.querySelector('ha-card')) this._applyLook();
     // Ruhemodus mit Zeitfenster: einmal pro Minute pr\u00fcfen
     this._tickN = 0;
@@ -342,6 +413,9 @@ class FlowCardVAW extends HTMLElement {
     window.removeEventListener('keydown', this._onKey);
     window.removeEventListener('resize', this._onOrient);
     window.removeEventListener('orientationchange', this._onOrient);
+    document.removeEventListener('visibilitychange', this._onVis);
+    window.removeEventListener('focus', this._onVis);
+    try { clearTimeout(this._laFlipT); } catch (e) { /* ignorieren */ }
     if (this._fs === 'native') {
       try {
         (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
@@ -403,6 +477,8 @@ class FlowCardVAW extends HTMLElement {
     this._realHass = hass;
     this._hass = this._ttOn && this._ttOver ? this._ttMake(hass) : hass;
     this._update();
+    // noch nicht geschriebene Positionen nachholen (z. B. Verbindung war beim Ziehen kurz weg)
+    try { if (this._posPend && Object.keys(this._posPend).length) this._posPush(); } catch (e) { /* ignorieren */ }
     try { this._posLoadWs(); } catch (e) { /* ignorieren */ }
   }
 
@@ -1408,6 +1484,7 @@ class FlowCardVAW extends HTMLElement {
       const y0 = VH + 6;
       const rowH = 82 + 2 * (RM - R2);
       VH = y0 + rows * rowH + 6;
+      const stIconQ = [];
       stCirc.forEach((q, k) => {
         const row = Math.floor(k / perRow);
         const inRow = row === rows - 1 ? stCirc.length - row * perRow : perRow;
@@ -1422,7 +1499,12 @@ class FlowCardVAW extends HTMLElement {
         stSvg += `<g class="stc" id="stc_${id}" data-st="${q.i}:${q.j}">${vawShapeEl(SH, cx, cy, rs, 'fill="var(--card-background-color, #fff)"')}${vawShapeEl(SH, cx, cy, rs, `id="stk_${id}" fill="none" stroke="#888" stroke-width="3"`)}<text id="stt_${id}" x="${cx}" y="${cy + 16}" class="s" style="font-size:${9 * fmOf(stCfg[q.i], szS(q))}px">\u2013</text><text id="stn_${id}" x="${cx}" y="${cy + rs + 14}" class="n" style="font-size:${10 * fmOf(stCfg[q.i], szS(q))}px"></text></g>`;
         const se = this._stSwEnt(stCfg[q.i], q.j);
         if (se) swBtn('st_' + id, { switch: se, switch_confirm: stCfg[q.i].switch_confirm, name: stCfg[q.i].ents.length === 1 && stCfg[q.i].name ? stCfg[q.i].name : stCfg[q.i].ents[q.j].name || stCfg[q.i].name }, cx, cy, rs, stCfg[q.i].open_color || '#fb8c00');
-        stIcons += `<ha-icon id="sti_${id}" icon="mdi:door-closed" style="left:${(cx / VW) * 100}%;top:${((cy - 5) / VH) * 100}%;color:#888;--mdc-icon-size:${((18 * rs / R2 / VW) * 100).toFixed(3)}cqw"></ha-icon>`;
+        stIconQ.push({ id, cx, cy, rs });
+      });
+      // Symbole erst nach der Schleife setzen: VH kann oben noch wachsen (verschobener Kreis haengt
+      // nach unten ueber). Fruehere Symbole hingen sonst mit altem VH unter ihren Kreisen.
+      stIconQ.forEach((o) => {
+        stIcons += `<ha-icon id="sti_${o.id}" icon="mdi:door-closed" style="left:${(o.cx / VW) * 100}%;top:${((o.cy - 5) / VH) * 100}%;color:#888;--mdc-icon-size:${((18 * o.rs / R2 / VW) * 100).toFixed(3)}cqw"></ha-icon>`;
       });
     }
     if (c.line_corners === 'square') links.forEach((l) => { l.d = l.d.replace(/Q(-?[\d.]+),(-?[\d.]+) (-?[\d.]+),(-?[\d.]+)/g, 'L$1,$2 L$3,$4'); });
@@ -1676,8 +1758,10 @@ class FlowCardVAW extends HTMLElement {
       return vn + (ks.length ? 'positions:\n' + ks.map((k) => `  ${k}: {x: ${P[k].x || 0}, y: ${P[k].y || 0}}`).join('\n') : 'positions: {}');
     };
     this._laYamlText = laYaml;
+    // Positionen gelten je Fenster-Ausrichtung: Knopf, der sie in die andere uebernimmt
+    const laOth = this._orient() === 'v' ? 'quer' : 'hochkant';
     const laHtml = (c.layout_assistant === true ? `<div class="labtn${this._la ? ' on' : ''}" data-act="la" title="Layout bearbeiten"><ha-icon icon="mdi:cursor-move"></ha-icon></div>` : '')
-      + (this._la ? `${this._laTxt ? `<textarea class="lat" readonly>${esc(laYaml())}</textarea>` : ''}<div class="labar"><span>Kreise ziehen</span><button data-act="lagrid">Raster ${this._laGrid === false ? 'aus' : 'an'}</button><button data-act="lareset">Zur\u00fccksetzen</button><button data-act="lacopy">YAML</button><button data-act="ladone">Fertig</button></div>` : '');
+      + (this._la ? `${this._laTxt ? `<textarea class="lat" readonly>${esc(laYaml())}</textarea>` : ''}<div class="labar"><span>Kreise ziehen</span><button data-act="lagrid">Raster ${this._laGrid === false ? 'aus' : 'an'}</button><button data-act="laflip" title="Diese Anordnung auch f\u00fcr ${laOth} \u00fcbernehmen">${this._laFlip ? '\u00dcbernommen' : '\u2192 ' + laOth}</button><button data-act="lareset">Zur\u00fccksetzen</button><button data-act="lacopy">YAML</button><button data-act="ladone">Fertig</button></div>` : '');
     const ttHrs = this._ttHours();
     const ttHtml = c.time_travel === true
       ? (this._ttOn
@@ -2030,6 +2114,8 @@ class FlowCardVAW extends HTMLElement {
             this._laTxt = false;
           } else if (a === 'lagrid') {
             this._laGrid = this._laGrid === false;
+          } else if (a === 'laflip') {
+            this._posCopyOther();
           } else if (a === 'lareset') {
             this._posSave(true);
             this._applyCfg();
@@ -4029,7 +4115,7 @@ class FlowCardVAWEditor extends HTMLElement {
     if (this._form) return;
     const note = document.createElement('div');
     note.style.cssText = 'font-size:12px;opacity:.7;margin:0 0 12px';
-    note.textContent = 'Flow Card Version 1.2.2 \u00b7 Ansichten (views) und Positionen (positions) sowie Sonderf\u00e4lle (secondary, extra, Namen der Ringe usw.) bleiben erhalten und lassen sich im Code-Editor (\u201eYAML\u201c) erg\u00e4nzen.';
+    note.textContent = 'Flow Card Version 1.2.3 \u00b7 Ansichten (views) und Positionen (positions) sowie Sonderf\u00e4lle (secondary, extra, Namen der Ringe usw.) bleiben erhalten und lassen sich im Code-Editor (\u201eYAML\u201c) erg\u00e4nzen.';
     const form = document.createElement('ha-form');
     form.schema = VAW_SCHEMA;
     form.hass = this._hass;
@@ -4048,13 +4134,13 @@ class FlowCardVAWEditor extends HTMLElement {
 }
 customElements.define('flow-card-vaw-editor', FlowCardVAWEditor);
 
-console.info('%c FLOW-CARD-VAW %c Version 1.2.2 ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
+console.info('%c FLOW-CARD-VAW %c Version 1.2.3 ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
 customElements.define('flow-card-vaw', FlowCardVAW);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'flow-card-vaw',
   name: 'Flow Card (W / A / V)',
-  description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.2.2)',
+  description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.2.3)',
   preview: true,
   documentationURL: 'https://github.com/xFirefliesx/flow-card-vaw',
 });

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.3
+
+- Fix: positions saved on one device are no longer lost when a second device saves. Each device used to push its whole local store to Home Assistant, so the last writer wiped the other device's layouts. A save now re-reads the stored state and writes only its own entries into it
+- Positions are picked up while the card stays open: the card re-reads them at most every 15 seconds and immediately when the window is focused again, so a change made on the phone shows up on the desktop without `Ctrl+F5`
+- Resetting a layout now reaches the other devices too (it leaves a delete marker instead of just dropping the entry locally)
+- Layout assistant: new button `→ quer` / `→ hochkant` copies the arrangement of the current orientation to the other one. Positions stay stored per orientation, as before - the button is the shortcut when both should look the same
+- Fix: icons of status circles drifted below their circles when a dragged status circle reached past the lower edge of the card. The canvas grew while the icons had already been placed against the old height
+
 ## 1.2.2
 
 - `layout` can now be set per window orientation: `layout: {v: vertical, h: horizontal}` picks the vertical build-down layout while the window is portrait and the horizontal one while it is landscape. `portrait`/`hochkant` and `landscape`/`quer` work as key names too

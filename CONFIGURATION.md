@@ -424,6 +424,9 @@ Sammelkreis Rest:
 
 Layout-Assistent (zusätzlich):
   # Raster (10) und Hilfslinien über die Leiste unten; jeder kleine Kreis ist einzeln verschiebbar
+  # Die Positionen gehören zum Benutzer (nicht zum Gerät) und werden getrennt für hochkant und
+  # quer gespeichert. Der Knopf "→ quer" bzw. "→ hochkant" übernimmt die Anordnung in die
+  # andere Ausrichtung. Ein zweites offenes Fenster holt den neuen Stand von selbst nach.
   positions:
     solar_c0: {x: -40, y: 20}   # Panel 1 von Solar (solar_c0, solar_c1 ...)
     gph_1: {x: 0, y: 30}        # Phase 2 am Netz (gph_0, gph_1 ...)
