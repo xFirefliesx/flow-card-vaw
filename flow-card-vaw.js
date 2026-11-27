@@ -4055,4 +4055,6 @@ window.customCards.push({
   type: 'flow-card-vaw',
   name: 'Flow Card (W / A / V)',
   description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.2.2)',
+  preview: true,
+  documentationURL: 'https://github.com/xFirefliesx/flow-card-vaw',
 });
