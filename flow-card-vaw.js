@@ -158,35 +158,117 @@ class FlowCardVAW extends HTMLElement {
   }
 
   _posSave(clear) {
-    const st = this._posStore();
-    const key = this._posKey();
     const P = this._pos || {};
-    const ks = Object.keys(P).filter((k) => P[k] && (P[k].x || P[k].y));
-    if (clear || !ks.length) delete st[key];
-    else {
-      const o = {};
-      ks.forEach((k) => { o[k] = { x: P[k].x || 0, y: P[k].y || 0 }; });
-      st[key] = o;
-    }
-    try { localStorage.setItem('flow-card-vaw-pos', JSON.stringify(st)); } catch (e) { /* ignorieren */ }
-    const h = this._realHass;
+    const ks = Object.keys(P).filter((k) => vawPosUsed(P[k]));
+    const o = {};
+    ks.forEach((k) => { o[k] = vawPosEntry(P[k]); });
+    this._posWrite(this._posKey(), clear || !ks.length ? null : o);
+  }
+
+  // Einen Schritt fuer "Rueckgaengig" sichern (Stand vor der Aenderung)
+  _laPush() {
+    this._laU = this._laU || [];
+    this._laU.push(JSON.stringify(this._pos || {}));
+    if (this._laU.length > 40) this._laU.shift();
+  }
+
+  // Letzten Schritt zuruecknehmen
+  _laUndo() {
+    if (!this._laU || !this._laU.length) return;
+    let prev = null;
+    try { prev = JSON.parse(this._laU.pop()); } catch (e) { return; }
+    this._pos = prev || {};
+    this._posSave();
+    this._applyCfg();
+  }
+
+  // Anordnung der aktuellen Ausrichtung in die andere uebernehmen (hochkant <-> quer)
+  _posCopyOther() {
+    const P = this._pos || {};
+    const ks = Object.keys(P).filter((k) => vawPosUsed(P[k]));
+    const o = {};
+    ks.forEach((k) => { o[k] = vawPosEntry(P[k]); });
+    this._posWrite(this._posKey(this._orient() === 'v' ? 'h' : 'v'), ks.length ? o : null);
+    this._laFlip = true;
     try {
-      if (h && typeof h.callWS === 'function') Promise.resolve(h.callWS({ type: 'frontend/set_user_data', key: 'flow_card_vaw_positions', value: st })).catch(() => {});
+      clearTimeout(this._laFlipT);
+      this._laFlipT = setTimeout(() => { this._laFlip = false; if (this._la && this.shadowRoot) this._render(); }, 1600);
     } catch (e) { /* ignorieren */ }
   }
 
-  _posLoadWs() {
+  // Einen Eintrag sichern: null bleibt als Loeschvermerk stehen, damit auch das Zuruecksetzen
+  // auf den anderen Geraeten ankommt
+  _posWrite(key, val) {
+    const st = this._posStore();
+    st[key] = val || null;
+    try { localStorage.setItem('flow-card-vaw-pos', JSON.stringify(st)); } catch (e) { /* ignorieren */ }
+    this._posPend = this._posPend || {};
+    this._posPend[key] = val ? JSON.parse(JSON.stringify(val)) : null;
+    this._posPush();
+  }
+
+  // Vor dem Schreiben den Stand aus Home Assistant holen und nur die eigenen Eintraege
+  // darueberlegen. Frueher schob jedes Geraet seinen ganzen lokalen Speicher hoch und
+  // loeschte damit die Positionen der anderen Geraete.
+  _posPush() {
     const h = this._realHass;
-    if (this._posWs || !h || typeof h.callWS !== 'function' || !this._c || this._c.layout_assistant !== true) return;
-    this._posWs = true;
+    if (!h || typeof h.callWS !== 'function' || this._posBusy) {
+      if (this._posBusy) this._posAgain = true;
+      return;
+    }
+    const pend = Object.assign({}, this._posPend || {});
+    if (!Object.keys(pend).length) return;
+    this._posBusy = true;
+    Promise.resolve(h.callWS({ type: 'frontend/get_user_data', key: 'flow_card_vaw_positions' }))
+      .catch(() => null)
+      .then((r) => {
+        const srv = r && r.value && typeof r.value === 'object' ? r.value : {};
+        const out = Object.assign({}, srv);
+        Object.keys(pend).forEach((k) => { out[k] = pend[k] || null; });
+        this._posObj = Object.assign({}, out);
+        try { localStorage.setItem('flow-card-vaw-pos', JSON.stringify(out)); } catch (e) { /* ignorieren */ }
+        return h.callWS({ type: 'frontend/set_user_data', key: 'flow_card_vaw_positions', value: out });
+      })
+      .then(() => {
+        const cur = this._posPend || {};
+        Object.keys(pend).forEach((k) => {
+          if (Object.prototype.hasOwnProperty.call(cur, k) && JSON.stringify(cur[k]) === JSON.stringify(pend[k])) delete cur[k];
+        });
+      })
+      .catch(() => {})
+      .then(() => {
+        this._posBusy = false;
+        if (this._posAgain) {
+          this._posAgain = false;
+          this._posPush();
+        }
+      });
+  }
+
+  // Positionen aus Home Assistant nachladen, auch waehrend die Karte offen ist: sonst sieht
+  // ein zweites Geraet die Aenderung erst nach einem Neuladen der Seite
+  _posLoadWs(force) {
+    const h = this._realHass;
+    if (!h || typeof h.callWS !== 'function' || !this._c || this._c.layout_assistant !== true) return;
+    if (this._posBusy || this._drag || this._ttDrag) return;
+    const now = Date.now();
+    if (!force) {
+      if (this._posGot && now - this._posGot < 15000) return;
+      try { if (typeof document !== 'undefined' && document.hidden) return; } catch (e) { /* ignorieren */ }
+    }
+    this._posGot = now;
     Promise.resolve(h.callWS({ type: 'frontend/get_user_data', key: 'flow_card_vaw_positions' }))
       .then((r) => {
         const v = r && r.value;
-        if (v && typeof v === 'object' && !this._drag) {
-          this._posObj = Object.assign({}, this._posStore(), v);
-          try { localStorage.setItem('flow-card-vaw-pos', JSON.stringify(this._posObj)); } catch (e) { /* ignorieren */ }
-          this._applyCfg();
-        }
+        if (!v || typeof v !== 'object' || this._drag) return;
+        const key = this._posKey();
+        const before = JSON.stringify(this._posStore()[key] || null);
+        const merged = Object.assign({}, this._posStore(), v);
+        const pend = this._posPend || {};
+        Object.keys(pend).forEach((k) => { merged[k] = pend[k] || null; });
+        this._posObj = merged;
+        try { localStorage.setItem('flow-card-vaw-pos', JSON.stringify(merged)); } catch (e) { /* ignorieren */ }
+        if (JSON.stringify(merged[key] || null) !== before) this._applyCfg();
       })
       .catch(() => {});
   }
@@ -268,13 +350,15 @@ class FlowCardVAW extends HTMLElement {
     this._c = T ? Object.assign({}, T, c0) : c0;
     const p = this._c.positions;
     this._pos = {};
-    if (p && typeof p === 'object') Object.keys(p).forEach((k) => { if (p[k] && typeof p[k] === 'object') this._pos[k] = { x: Number(p[k].x) || 0, y: Number(p[k].y) || 0 }; });
+    if (p && typeof p === 'object') Object.keys(p).forEach((k) => { if (p[k] && typeof p[k] === 'object') this._pos[k] = vawPosEntry(p[k]); });
     // im Layout-Assistenten verschobene Positionen (pro Benutzer in Home Assistant und im Browser gespeichert) haben Vorrang
     if (this._c.layout_assistant === true) {
       const ps = this._posStore();
-      // eigene Positionen der aktuellen Ausrichtung, sonst die alten gemeinsamen
-      const sv = ps[this._posKey()] || ps[this._posKeyBase()];
-      if (sv && typeof sv === 'object') Object.keys(sv).forEach((k) => { if (sv[k] && typeof sv[k] === 'object') this._pos[k] = { x: Number(sv[k].x) || 0, y: Number(sv[k].y) || 0 }; });
+      // eigene Positionen der aktuellen Ausrichtung, sonst die alten gemeinsamen.
+      // null ist ein Loeschvermerk (zurueckgesetzt) und faellt nicht auf die alten zurueck.
+      const k0 = this._posKey();
+      const sv = Object.prototype.hasOwnProperty.call(ps, k0) ? ps[k0] : ps[this._posKeyBase()];
+      if (sv && typeof sv === 'object') Object.keys(sv).forEach((k) => { if (sv[k] && typeof sv[k] === 'object') this._pos[k] = vawPosEntry(sv[k]); });
     }
     this._render();
   }
@@ -321,6 +405,10 @@ class FlowCardVAW extends HTMLElement {
     };
     window.addEventListener('resize', this._onOrient);
     window.addEventListener('orientationchange', this._onOrient);
+    // zurueck im Fenster: Positionen sofort nachsehen, falls ein anderes Geraet sie geaendert hat
+    this._onVis = () => { try { this._posLoadWs(true); } catch (e) { /* ignorieren */ } };
+    document.addEventListener('visibilitychange', this._onVis);
+    window.addEventListener('focus', this._onVis);
     if (this.shadowRoot && this.shadowRoot.querySelector('ha-card')) this._applyLook();
     // Ruhemodus mit Zeitfenster: einmal pro Minute pr\u00fcfen
     this._tickN = 0;
@@ -342,6 +430,13 @@ class FlowCardVAW extends HTMLElement {
     window.removeEventListener('keydown', this._onKey);
     window.removeEventListener('resize', this._onOrient);
     window.removeEventListener('orientationchange', this._onOrient);
+    document.removeEventListener('visibilitychange', this._onVis);
+    window.removeEventListener('focus', this._onVis);
+    if (this._ttEnd) {
+      window.removeEventListener('pointerup', this._ttEnd);
+      window.removeEventListener('pointercancel', this._ttEnd);
+    }
+    try { clearTimeout(this._laFlipT); } catch (e) { /* ignorieren */ }
     if (this._fs === 'native') {
       try {
         (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
@@ -370,12 +465,16 @@ class FlowCardVAW extends HTMLElement {
       this._applyFs();
       return;
     }
-    const req = card.requestFullscreen || card.webkitRequestFullscreen;
+    // Vollbild am eigenen Element anfordern, nicht an der ha-card darin: beim Umschalten des
+    // Layout-Assistenten wird der Inhalt neu aufgebaut, und der Browser beendet das Vollbild,
+    // sobald sein Vollbild-Element aus dem Dokument faellt.
+    const host = this;
+    const req = host.requestFullscreen || host.webkitRequestFullscreen;
     this._fs = 'overlay';
     this._applyFs();
     if (req) {
       try {
-        const r = req.call(card);
+        const r = req.call(host);
         if (r && r.then) {
           r.then(() => {
             this._fs = 'native';
@@ -395,14 +494,48 @@ class FlowCardVAW extends HTMLElement {
     const card = this.shadowRoot && this.shadowRoot.querySelector('ha-card');
     if (!card) return;
     card.classList.toggle('fs', !!this._fs);
+    // Im Vollbild deckend machen: bei durchsichtigem Hintergrund (background: transparent)
+    // scheinen sonst das Dashboard und andere Karten mitsamt ihren Leisten durch.
+    if (this._fs) {
+      card.style.setProperty('background-color', 'var(--ha-card-background, var(--card-background-color, #111))');
+      this._fsBgSet = true;
+    } else if (this._fsBgSet) {
+      this._fsBgSet = false;
+      this._applyBg();
+    }
     const ic = this.shadowRoot.querySelector('.fsbtn ha-icon');
     if (ic) ic.setAttribute('icon', this._fs ? 'mdi:fullscreen-exit' : 'mdi:fullscreen');
+    // Zweiter Riegel: Geht das Vollbild beim Neuaufbau (Layout-Assistent, Ansichtswechsel)
+    // doch verloren, sofort wieder anfordern - der Klick zaehlt dann noch als Benutzeraktion.
+    // Lehnt der Browser ab, bleibt die bildschirmfuellende Ueberlagerung statt gar nichts.
+    if (this._fs === 'native') {
+      let out = false;
+      try { out = !(document.fullscreenElement || document.webkitFullscreenElement); } catch (e) { out = false; }
+      if (out) {
+        const back = () => {
+          this._fs = 'overlay';
+          card.classList.add('fs');
+        };
+        const req = this.requestFullscreen || this.webkitRequestFullscreen;
+        if (!req) back();
+        else {
+          try {
+            const r = req.call(this);
+            if (r && r.catch) r.catch(back);
+          } catch (e) {
+            back();
+          }
+        }
+      }
+    }
   }
 
   set hass(hass) {
     this._realHass = hass;
     this._hass = this._ttOn && this._ttOver ? this._ttMake(hass) : hass;
     this._update();
+    // noch nicht geschriebene Positionen nachholen (z. B. Verbindung war beim Ziehen kurz weg)
+    try { if (this._posPend && Object.keys(this._posPend).length) this._posPush(); } catch (e) { /* ignorieren */ }
     try { this._posLoadWs(); } catch (e) { /* ignorieren */ }
   }
 
@@ -684,6 +817,10 @@ class FlowCardVAW extends HTMLElement {
       if (has('flash')) add('b', 'fl', '');
       card.insertBefore(W, lastLayer ? lastLayer.nextSibling : card.firstChild);
     }
+    if (this._fs) {
+      card.style.setProperty('background-color', 'var(--ha-card-background, var(--card-background-color, #111))');
+      this._fsBgSet = true;
+    }
   }
 
   // Kreisstil (flach, Glas, Neon) und kompakter Modus (aus / automatisch bei schmaler Karte / immer)
@@ -717,6 +854,9 @@ class FlowCardVAW extends HTMLElement {
   _render() {
     this._hsHtml = null;
     this._infoHtml = null;
+    // Das gerade gezogene Element bleibt bei der Groesse der Zeichenflaeche aussen vor:
+    // sonst waechst die Flaeche mit, alles skaliert neu und der Kreis zappelt unter dem Finger.
+    const dragKey = this._drag ? this._drag.key : null;
     const c = this._c;
     // Optik-Optionen (alle einzeln abschaltbar)
     const optOn = (k) => c[k] !== false;
@@ -1078,7 +1218,7 @@ class FlowCardVAW extends HTMLElement {
         }
       });
       // verschobene Kreise nie abschneiden: Zeichenfl\u00e4che erweitern und ggf. alles nach rechts/unten schieben
-      const mvd = nodes.filter((n) => n._mv);
+      const mvd = nodes.filter((n) => n._mv && n.key !== dragKey);
       if (mvd.length) {
         const rr = (n) => (n.r || 40);
         let x0 = Math.min(...mvd.map((n) => n.x - rr(n) - 70));
@@ -1111,6 +1251,53 @@ class FlowCardVAW extends HTMLElement {
     nodes.forEach((n) => { by[n.key] = n; });
     const links = [];
     const R = 36; // Kurvenradius der Linien
+    // Streckenzug durch Stuetzpunkte, Ecken abgerundet (fuer im Assistenten verschobene Linien)
+    const poly = (pts) => {
+      let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+      for (let i = 1; i < pts.length - 1; i++) {
+        const p0 = pts[i - 1];
+        const p1 = pts[i];
+        const p2 = pts[i + 1];
+        const d1 = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
+        const d2 = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+        const rr = Math.max(0, Math.min(R, d1 / 2, d2 / 2));
+        if (!(rr >= 2) || !d1 || !d2) {
+          d += ` L${p1[0].toFixed(1)},${p1[1].toFixed(1)}`;
+          continue;
+        }
+        const a1 = [p1[0] + ((p0[0] - p1[0]) / d1) * rr, p1[1] + ((p0[1] - p1[1]) / d1) * rr];
+        const a2 = [p1[0] + ((p2[0] - p1[0]) / d2) * rr, p1[1] + ((p2[1] - p1[1]) / d2) * rr];
+        d += ` L${a1[0].toFixed(1)},${a1[1].toFixed(1)} Q${p1[0].toFixed(1)},${p1[1].toFixed(1)} ${a2[0].toFixed(1)},${a2[1].toFixed(1)}`;
+      }
+      const e = pts[pts.length - 1];
+      return d + ` L${e[0].toFixed(1)},${e[1].toFixed(1)}`;
+    };
+    // Verschobene Linie: gleiche Art der Fuehrung wie sonst (rechte Winkel), nur der Knick wandert.
+    // Liegen beide Kreise auf gleicher Hoehe, entsteht ein Umweg mit vier Ecken statt eines Knicks.
+    const orth = (a, b, o) => {
+      const ox = Number(o.x) || 0;
+      const oy = Number(o.y) || 0;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      if (!vert) {
+        if (Math.abs(dy) >= 1) {
+          const xm = (a.x + b.x) / 2 + ox;
+          return poly([[a.x, a.y], [xm, a.y], [xm, b.y], [b.x, b.y]]);
+        }
+        const yy = a.y + oy;
+        const mx = (a.x + b.x) / 2;
+        const w = Math.max(40, Math.abs(dx) / 4);
+        return poly([[a.x, a.y], [mx - w, a.y], [mx - w, yy], [mx + w, yy], [mx + w, b.y], [b.x, b.y]]);
+      }
+      if (Math.abs(dx) >= 1) {
+        const ym = (a.y + b.y) / 2 + oy;
+        return poly([[a.x, a.y], [a.x, ym], [b.x, ym], [b.x, b.y]]);
+      }
+      const xx = a.x + ox;
+      const my = (a.y + b.y) / 2;
+      const h = Math.max(40, Math.abs(dy) / 4);
+      return poly([[a.x, a.y], [a.x, my - h], [xx, my - h], [xx, my + h], [b.x, my + h], [b.x, b.y]]);
+    };
     const lc = (n) => n.cfg.line_color || n.cfg.color;
     const straight = (a, bb) => `M${a.x},${a.y} L${bb.x},${bb.y}`;
     const vv = (a, bb) => (Math.abs(a.x - bb.x) < 1 ? `M${a.x},${a.y} V${bb.y}` : `M${a.x},${a.y} L${bb.x},${bb.y}`);
@@ -1140,37 +1327,39 @@ class FlowCardVAW extends HTMLElement {
       return `M${a.x},${a.y} V${ym - r} Q${a.x},${ym} ${a.x + sg * r},${ym} H${bb.x - sg * r} Q${bb.x},${ym} ${bb.x},${ym + r} V${bb.y}`;
     };
     // Linien von einem Kreis (Haus/Zone) zu mehreren Kindern (Zonen/Ger\u00e4te), ohne dass sie sich \u00fcberlappen:
-    // jede Linie startet an einem eigenen Punkt am Kreis, die Knicke sind gestaffelt (die weiteste Linie knickt zuerst ab)
+    // jede Linie startet an einem eigenen Punkt mittig an der Kreisseite, die Knicke sind gestaffelt
     const fanPaths = (par, kids, vt, umFixed) => {
       const U = (o) => (vt ? o.y : o.x);
       const V = (o) => (vt ? o.x : o.y);
       const P = (u, v) => (vt ? `${v},${u}` : `${u},${v}`);
+      // Ausgangspunkte sitzen mittig auf der Seite des Kreises und sind gleichm\u00e4\u00dfig um diese
+      // Mitte verteilt - unabh\u00e4ngig davon, wie viele Ziele ober- und unterhalb liegen.
       const sorted = kids.slice().sort((a, b) => V(a) - V(b));
-      const lo = sorted.filter((k) => V(k) - V(par) < -1).reverse(); // n\u00e4chste zuerst
-      const hi = sorted.filter((k) => V(k) - V(par) > 1);
-      const mid = sorted.filter((k) => Math.abs(V(k) - V(par)) <= 1);
-      const hasMid = mid.length > 0;
-      const side = Math.max(lo.length, hi.length, 1);
-      const sp = Math.min(14, (par.r * 0.7) / (side + 0.5));
+      const nK = sorted.length;
+      const sp = nK > 1 ? Math.min(20, (par.r * 1.9) / (nK - 1)) : 0;
+      // Abstand der Knicke: so weit wie der Platz zwischen den Kreisen hergibt, mindestens 8,
+      // damit auch dicke Linien nebeneinander passen und nicht aufeinander liegen
+      const gapMin = Math.max(30, Math.min(...sorted.map((k) => Math.abs(U(k) - U(par)) - k.r - par.r)));
+      const stepFan = nK > 1 ? Math.max(10, Math.min(20, (gapMin * 0.8) / (nK - 1))) : 0;
       const res = {};
       const place = (k, off, rank, cnt) => {
         const ua = U(par);
         const ub = U(k);
         const va = V(par) + off;
         const vb = V(k);
-        const gap = ub - k.r - (ua + par.r);
-        const stepU = Math.min(10, Math.max(3, (gap * 0.5) / side), 24 / Math.max(1, side - 1));
         const umBase = umFixed !== undefined ? umFixed : (ua + par.r + ub - k.r) / 2;
-        const um = umBase + ((cnt - 1) / 2 - rank) * stepU;
+        const stepU = stepFan;
+        // Aussen zuerst knicken: die aeusserste Linie turnt am naechsten am Kreis ab, die
+        // mittlere zuletzt. Sonst muss eine Linie das senkrechte Stueck einer anderen kreuzen.
+        const dist = Math.abs(rank - (cnt - 1) / 2);
+        const um = umBase + ((cnt - 1) / 4 - dist) * stepU;
         const dv = vb - va;
         if (Math.abs(dv) < 1) return `M${P(ua, va)} L${P(ub, vb)}`;
         const sg = Math.sign(dv);
         const r = Math.max(2, Math.min(R, Math.abs(dv) / 2, um - ua, ub - um));
         return `M${P(ua, va)} L${P(um - r, va)} Q${P(um, va)} ${P(um, va + sg * r)} L${P(um, vb - sg * r)} Q${P(um, vb)} ${P(um + r, vb)} L${P(ub, vb)}`;
       };
-      lo.forEach((k, j) => { res[k.key] = place(k, -(j + (hasMid ? 1 : 0.5)) * sp, j, lo.length); });
-      hi.forEach((k, j) => { res[k.key] = place(k, (j + (hasMid ? 1 : 0.5)) * sp, j, hi.length); });
-      mid.forEach((k) => { res[k.key] = place(k, 0, 0, 1); });
+      sorted.forEach((k, i) => { res[k.key] = place(k, (i - (nK - 1) / 2) * sp, i, nK); });
       return res;
     };
     const fanLinks = () => {
@@ -1232,7 +1421,7 @@ class FlowCardVAW extends HTMLElement {
       const left = mode === 'left'; // Spalte links neben dem Kreis
       const cy0 = below ? parent.y + parent.r + (kd !== undefined ? kd : 64) + padK : parent.y - parent.r - (kd || 75) - padK;
       const kmax = Math.max(1, ...list.map((x) => (x && typeof x === 'object' && !isNaN(Number(x.size)) ? Math.min(1.6, Number(x.size)) : 1)));
-      if (below) VH = Math.max(VH, cy0 + rB * kmax + 30 + (parent.mtail || 0));
+      if (below && parent.key !== dragKey) VH = Math.max(VH, cy0 + rB * kmax + 30 + (parent.mtail || 0));
       list.forEach((raw, i) => {
         const o = typeof raw === 'string' ? { [main === 's' ? 'soc' : 'power']: raw } : { ...raw };
         const id = prefix + i;
@@ -1242,7 +1431,7 @@ class FlowCardVAW extends HTMLElement {
         const cx = (left ? parent.x - parent.r - (kd || 22) - r : x0 + i * gap) + (pk ? Number(pk.x) || 0 : 0);
         const cy = (left ? parent.y + (i - (k - 1) / 2) * gap : cy0 + (below ? 0 : Math.max(0, r - rB))) + (pk ? Number(pk.y) || 0 : 0);
         this._kAbs[id] = { x: cx, y: cy, r };
-        if (pk && (pk.x || pk.y)) {
+        if (pk && (pk.x || pk.y) && id !== dragKey) {
           const kbx = this._kidBox || (this._kidBox = { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 });
           kbx.x0 = Math.min(kbx.x0, cx - r - (left ? 70 : 40));
           kbx.x1 = Math.max(kbx.x1, cx + r + 40);
@@ -1368,7 +1557,7 @@ class FlowCardVAW extends HTMLElement {
       const kb = this._kidBox;
       const needX = kb ? Math.max(0, -(kb.x0 - S0.x)) : 0;
       const needY = kb ? Math.max(0, -(kb.y0 - S0.y)) : 0;
-      if ((needX !== S0.x || needY !== S0.y) && !this._kRe) {
+      if ((needX !== S0.x || needY !== S0.y) && !this._kRe && !this._drag) {
         if (this._drag) {
           const ddx = needX - S0.x;
           const ddy = needY - S0.y;
@@ -1383,10 +1572,19 @@ class FlowCardVAW extends HTMLElement {
         this._kRe = true;
         try { return this._render(); } finally { this._kRe = false; }
       }
-      if (kb) {
+      if (kb && !this._drag) {
         VW = Math.max(VW, Math.ceil(kb.x1));
         VH = Math.max(VH, Math.ceil(kb.y1));
       }
+    }
+    // Waehrend des Ziehens bleibt die Zeichenflaeche genau so gross wie davor. Sonst skaliert
+    // die ganze Karte bei jedem Einzelbild neu - sichtbar am wandernden Raster.
+    if (!this._drag) {
+      this._vwHold = VW;
+      this._vhHold = VH;
+    } else if (this._vhHold !== undefined) {
+      VW = this._vwHold;
+      VH = this._vhHold;
     }
     // Unabh\u00e4ngige Status-Kreise unten: ein Kreis pro Sensor (nicht mit dem Diagramm verbunden)
     const stCirc = [];
@@ -1408,6 +1606,7 @@ class FlowCardVAW extends HTMLElement {
       const y0 = VH + 6;
       const rowH = 82 + 2 * (RM - R2);
       VH = y0 + rows * rowH + 6;
+      const stIconQ = [];
       stCirc.forEach((q, k) => {
         const row = Math.floor(k / perRow);
         const inRow = row === rows - 1 ? stCirc.length - row * perRow : perRow;
@@ -1417,14 +1616,135 @@ class FlowCardVAW extends HTMLElement {
         // (Position wird unten f\u00fcr den Layout-Assistenten gemerkt)
         const cx = Math.max(rs + 4, Math.min(VW - rs - 4, VW / 2 + (k - row * perRow - (inRow - 1) / 2) * (2 * RM + GX) + (pq ? pq.x : 0)));
         const cy = Math.max(rs + 4, y0 + RM + 4 + row * rowH + (pq ? pq.y : 0));
-        if (pq && cy + rs + 26 > VH) VH = cy + rs + 26;
+        if (pq && 'st_' + id !== dragKey && cy + rs + 26 > VH) VH = cy + rs + 26;
         (this._stAbsNew = this._stAbsNew || {})['st_' + id] = { x: cx, y: cy, r: rs };
         stSvg += `<g class="stc" id="stc_${id}" data-st="${q.i}:${q.j}">${vawShapeEl(SH, cx, cy, rs, 'fill="var(--card-background-color, #fff)"')}${vawShapeEl(SH, cx, cy, rs, `id="stk_${id}" fill="none" stroke="#888" stroke-width="3"`)}<text id="stt_${id}" x="${cx}" y="${cy + 16}" class="s" style="font-size:${9 * fmOf(stCfg[q.i], szS(q))}px">\u2013</text><text id="stn_${id}" x="${cx}" y="${cy + rs + 14}" class="n" style="font-size:${10 * fmOf(stCfg[q.i], szS(q))}px"></text></g>`;
         const se = this._stSwEnt(stCfg[q.i], q.j);
         if (se) swBtn('st_' + id, { switch: se, switch_confirm: stCfg[q.i].switch_confirm, name: stCfg[q.i].ents.length === 1 && stCfg[q.i].name ? stCfg[q.i].name : stCfg[q.i].ents[q.j].name || stCfg[q.i].name }, cx, cy, rs, stCfg[q.i].open_color || '#fb8c00');
-        stIcons += `<ha-icon id="sti_${id}" icon="mdi:door-closed" style="left:${(cx / VW) * 100}%;top:${((cy - 5) / VH) * 100}%;color:#888;--mdc-icon-size:${((18 * rs / R2 / VW) * 100).toFixed(3)}cqw"></ha-icon>`;
+        stIconQ.push({ id, cx, cy, rs });
+      });
+      // Symbole erst nach der Schleife setzen: VH kann oben noch wachsen (verschobener Kreis haengt
+      // nach unten ueber). Fruehere Symbole hingen sonst mit altem VH unter ihren Kreisen.
+      stIconQ.forEach((o) => {
+        stIcons += `<ha-icon id="sti_${o.id}" icon="mdi:door-closed" style="left:${(o.cx / VW) * 100}%;top:${((o.cy - 5) / VH) * 100}%;color:#888;--mdc-icon-size:${((18 * o.rs / R2 / VW) * 100).toFixed(3)}cqw"></ha-icon>`;
       });
     }
+    // Im Layout-Assistenten verschobene Linien (ln_<Linie>): die Linie laeuft dann als Bogen
+    // durch den gezogenen Punkt statt ueber die berechnete Fuehrung. Die Flusspunkte folgen,
+    // sie gleiten auf derselben Bahn.
+    let lnhSvg = '';
+    // Endpunkt einer Bahn ermitteln (M/L/H/V/Q/C werden mitgezaehlt)
+    const pathEnd = (dd) => {
+      let x = 0;
+      let y = 0;
+      const re = /([MLHVQC])([^MLHVQCZ]*)/g;
+      let m;
+      while ((m = re.exec(dd))) {
+        const v = (m[2].match(/-?[\d.]+/g) || []).map(Number);
+        const k = m[1];
+        if (k === 'M' || k === 'L') { x = v[0]; y = v[1]; } else if (k === 'H') { x = v[v.length - 1]; } else if (k === 'V') { y = v[v.length - 1]; } else if (k === 'Q') { x = v[2]; y = v[3]; } else if (k === 'C') { x = v[4]; y = v[5]; }
+      }
+      return [x, y];
+    };
+    // Ecken einer Bahn: die Steuerpunkte der Q-Befehle sind genau die rechten Winkel
+    const pathCorners = (dd) => {
+      const out = [];
+      const re = /Q(-?[\d.]+),(-?[\d.]+)/g;
+      let m;
+      while ((m = re.exec(dd))) out.push([Number(m[1]), Number(m[2])]);
+      return out;
+    };
+    // Bahn ueber zwei frei gesetzte Ecken. Auf welcher Seite die Linie den Kreis verlaesst
+    // bzw. erreicht, ergibt sich daraus, wo die jeweilige Ecke liegt: rechts, links, oben
+    // oder unten. Der Ansatzpunkt wandert dabei auf dem Kreisrand mit.
+    const route2 = (A, B, c1, c2) => {
+      const near = (u, v) => Math.abs(u - v) < 0.5;
+      const edge = (C, pt1) => {
+        const r = Math.max(8, C.r || 40);
+        const dx = pt1[0] - C.x;
+        const dy = pt1[1] - C.y;
+        if (Math.abs(dx) >= Math.abs(dy)) {
+          const oy = Math.max(-0.75 * r, Math.min(0.75 * r, dy));
+          return { x: C.x + (dx > 0 ? 1 : -1) * Math.sqrt(Math.max(1, r * r - oy * oy)), y: C.y + oy, h: true };
+        }
+        const ox = Math.max(-0.75 * r, Math.min(0.75 * r, dx));
+        return { x: C.x + ox, y: C.y + (dy > 0 ? 1 : -1) * Math.sqrt(Math.max(1, r * r - ox * ox)), h: false };
+      };
+      const E = edge(A, c1);
+      const N = edge(B, c2);
+      const p1 = E.h ? [c1[0], E.y] : [E.x, c1[1]];
+      const p2 = N.h ? [c2[0], N.y] : [N.x, c2[1]];
+      // Zwischenstueck: nach der ersten Ecke geht es quer zur Austrittsachse weiter, vor der
+      // zweiten Ecke quer zur Eintrittsachse. Daraus ergibt sich, wo die Zwischenecken liegen.
+      const pts = [[E.x, E.y], p1];
+      const dxp = Math.abs(p1[0] - p2[0]);
+      const dyp = Math.abs(p1[1] - p2[1]);
+      if (E.h && N.h) {
+        if (dxp > 0.5 && dyp > 0.5) {
+          const my = (p1[1] + p2[1]) / 2;
+          pts.push([p1[0], my], [p2[0], my]);
+        }
+      } else if (!E.h && !N.h) {
+        if (dxp > 0.5 && dyp > 0.5) {
+          const mx = (p1[0] + p2[0]) / 2;
+          pts.push([mx, p1[1]], [mx, p2[1]]);
+        }
+      } else if (E.h) {
+        if (dxp > 0.5 && dyp > 0.5) pts.push([p1[0], p2[1]]);
+      } else if (dxp > 0.5 && dyp > 0.5) pts.push([p2[0], p1[1]]);
+      pts.push(p2, [N.x, N.y]);
+      const cl = pts.filter((pp, i) => i === 0 || !(near(pp[0], pts[i - 1][0]) && near(pp[1], pts[i - 1][1])));
+      return cl.length > 2 ? poly(cl) : `M${cl[0][0].toFixed(1)},${cl[0][1].toFixed(1)} L${cl[cl.length - 1][0].toFixed(1)},${cl[cl.length - 1][1].toFixed(1)}`;
+    };
+    this._lnG = {};
+    links.forEach((l) => {
+      const q = this._pos && this._pos['ln_' + l.id];
+      // Ansatz- und Zielpunkt der bisherigen Bahn behalten: sonst rutscht eine verschobene
+      // Linie in die Kreismitte und verliert ihren Platz im Buendel
+      let pa = null;
+      let pb = null;
+      const m0 = /^M(-?[\d.]+),(-?[\d.]+)/.exec(l.d || '');
+      if (m0) {
+        pa = { x: Number(m0[1]), y: Number(m0[2]) };
+        const e0 = pathEnd(l.d);
+        pb = { x: e0[0], y: e0[1] };
+      }
+      const A = l.a && l.a.r !== undefined ? l.a : (this._kAbs && this._kAbs[l.a.key]) || null;
+      const B = l.b && l.b.r !== undefined ? l.b : (this._kAbs && this._kAbs[l.b.key]) || null;
+      if (q && q.c1 && q.c2 && A && B) {
+        l.d = route2(A, B, q.c1, q.c2);
+      } else if (q && (q.x || q.y) && pa && pb) {
+        // alte Form (ein Griff in der Mitte) bleibt lesbar
+        if (A && B) l.d = orth(pa, pb, q);
+        else {
+          const cx2 = (pa.x + pb.x) / 2 + 2 * (Number(q.x) || 0);
+          const cy2 = (pa.y + pb.y) / 2 + 2 * (Number(q.y) || 0);
+          l.d = `M${pa.x.toFixed(1)},${pa.y.toFixed(1)} Q${cx2.toFixed(1)},${cy2.toFixed(1)} ${pb.x.toFixed(1)},${pb.y.toFixed(1)}`;
+        }
+      }
+      if (this._la) {
+        // Griffe sitzen auf den beiden rechten Winkeln; hat die Bahn keine oder nur eine Ecke,
+        // werden zwei Punkte auf der Strecke genommen, damit sich beide ziehen lassen
+        const cs = pathCorners(l.d);
+        const s0 = pa || { x: 0, y: 0 };
+        const e0 = pb || { x: 0, y: 0 };
+        let g1;
+        let g2;
+        if (cs.length >= 2) {
+          g1 = cs[0];
+          g2 = cs[cs.length - 1];
+        } else if (cs.length === 1) {
+          g1 = cs[0];
+          g2 = [(cs[0][0] + e0.x) / 2, (cs[0][1] + e0.y) / 2];
+        } else {
+          g1 = [s0.x + (e0.x - s0.x) / 3, s0.y + (e0.y - s0.y) / 3];
+          g2 = [s0.x + ((e0.x - s0.x) * 2) / 3, s0.y + ((e0.y - s0.y) * 2) / 3];
+        }
+        this._lnG[l.id] = [g1, g2];
+        lnhSvg += `<circle class="lnh" data-ln="${l.id}" data-c="1" r="7" cx="${g1[0].toFixed(1)}" cy="${g1[1].toFixed(1)}"><title>Ecke am Startkreis</title></circle>`
+          + `<circle class="lnh" data-ln="${l.id}" data-c="2" r="7" cx="${g2[0].toFixed(1)}" cy="${g2[1].toFixed(1)}"><title>Ecke am Zielkreis</title></circle>`;
+      }
+    });
     if (c.line_corners === 'square') links.forEach((l) => { l.d = l.d.replace(/Q(-?[\d.]+),(-?[\d.]+) (-?[\d.]+),(-?[\d.]+)/g, 'L$1,$2 L$3,$4'); });
     // Positionen aller verschiebbaren Kreise merken (f\u00fcr Raster und Hilfslinien im Layout-Assistenten)
     this._abs = {};
@@ -1433,6 +1753,8 @@ class FlowCardVAW extends HTMLElement {
     Object.keys(this._kAbs || {}).forEach((k) => { this._abs[k] = this._kAbs[k]; });
     // Rahmen um Zonen samt Ger\u00e4ten (zone_frames: true oder pro Zone frame: true/false)
     let frameSvg = '';
+    let zfSvg = '';
+    this._zfAbs = {};
     nodes.filter((n) => /^z\d+$/.test(n.key)).forEach((zn) => {
       const on = zn.cfg && (zn.cfg.frame === true || (c.zone_frames === true && zn.cfg.frame !== false));
       if (!on) return;
@@ -1457,7 +1779,24 @@ class FlowCardVAW extends HTMLElement {
       });
       const col = zn.cfg.color || '#888';
       const P = 8;
-      frameSvg += `<rect class="zf" x="${(x0 - P).toFixed(1)}" y="${(y0 - P).toFixed(1)}" width="${(x1 - x0 + 2 * P).toFixed(1)}" height="${(y1 - y0 + 2 * P).toFixed(1)}" rx="20" fill="${col}" fill-opacity="0.07" stroke="${col}" stroke-opacity="0.4" stroke-width="1.5" stroke-dasharray="5 4" pointer-events="none"/>`;
+      // eigener Rahmen: im Layout-Assistenten verschiebbar (zf_<Zone>.x/y) und an den Ecken
+      // groessenverstellbar (.w/.h). Die Kreise darin bleiben, wo sie sind.
+      const fk = 'zf_' + zn.key;
+      const fo = (this._pos && this._pos[fk]) || null;
+      const bw = x1 - x0 + 2 * P;
+      const bh = y1 - y0 + 2 * P;
+      const fw = Math.max(60, bw + (fo ? Number(fo.w) || 0 : 0));
+      const fh = Math.max(60, bh + (fo ? Number(fo.h) || 0 : 0));
+      const fx = Math.max(0, Math.min(VW - fw, x0 - P + (fo ? Number(fo.x) || 0 : 0)));
+      const fy = Math.max(0, Math.min(VH - fh, y0 - P + (fo ? Number(fo.y) || 0 : 0)));
+      this._zfAbs[fk] = { x: fx, y: fy, w: fw, h: fh, bw, bh };
+      frameSvg += `<rect class="zf" id="zf_${zn.key}" data-zf="${zn.key}" x="${fx.toFixed(1)}" y="${fy.toFixed(1)}" width="${fw.toFixed(1)}" height="${fh.toFixed(1)}" rx="20" fill="${col}" fill-opacity="0.07" stroke="${col}" stroke-opacity="0.4" stroke-width="1.5" stroke-dasharray="5 4"${this._la ? '' : ' pointer-events="none"'}/>`;
+      if (this._la) {
+        const hs = 9;
+        [['nw', fx, fy], ['ne', fx + fw, fy], ['sw', fx, fy + fh], ['se', fx + fw, fy + fh]].forEach(([h, hx, hy]) => {
+          zfSvg += `<rect class="zfh" data-zf="${zn.key}" data-h="${h}" x="${(hx - hs).toFixed(1)}" y="${(hy - hs).toFixed(1)}" width="${2 * hs}" height="${2 * hs}" rx="3" fill="${col}" fill-opacity="0.85" stroke="var(--card-background-color, #1c1c1c)" stroke-width="1.5"/>`;
+        });
+      }
     });
     // schwebende Wert-Labels an den Linien (line_labels: true / Liste von Linien-Namen, oder pro Kreis line_label: true/false)
     const llOn = (l) => {
@@ -1671,23 +2010,47 @@ class FlowCardVAW extends HTMLElement {
       : '';
     const laYaml = () => {
       const P = this._pos || {};
-      const ks = Object.keys(P).filter((k) => P[k] && (P[k].x || P[k].y));
+      const ks = Object.keys(P).filter((k) => vawPosUsed(P[k]));
       const vn = viewsL.length > 1 && viewsL[this._vi] ? '# in Ansicht "' + (viewsL[this._vi].name || this._vi + 1) + '" (unter views) einfuegen\n' : '';
-      return vn + (ks.length ? 'positions:\n' + ks.map((k) => `  ${k}: {x: ${P[k].x || 0}, y: ${P[k].y || 0}}`).join('\n') : 'positions: {}');
+      const one = (k) => {
+        const q = P[k];
+        if (Array.isArray(q.c1) && Array.isArray(q.c2)) return `  ${k}: {c1: [${q.c1[0]}, ${q.c1[1]}], c2: [${q.c2[0]}, ${q.c2[1]}]}`;
+        const wh = q.w || q.h ? `, w: ${q.w || 0}, h: ${q.h || 0}` : '';
+        return `  ${k}: {x: ${q.x || 0}, y: ${q.y || 0}${wh}}`;
+      };
+      return vn + (ks.length ? 'positions:\n' + ks.map(one).join('\n') : 'positions: {}');
     };
     this._laYamlText = laYaml;
+    // Positionen gelten je Fenster-Ausrichtung: Knopf, der sie in die andere uebernimmt
+    const laOth = this._orient() === 'v' ? 'quer' : 'hochkant';
     const laHtml = (c.layout_assistant === true ? `<div class="labtn${this._la ? ' on' : ''}" data-act="la" title="Layout bearbeiten"><ha-icon icon="mdi:cursor-move"></ha-icon></div>` : '')
-      + (this._la ? `${this._laTxt ? `<textarea class="lat" readonly>${esc(laYaml())}</textarea>` : ''}<div class="labar"><span>Kreise ziehen</span><button data-act="lagrid">Raster ${this._laGrid === false ? 'aus' : 'an'}</button><button data-act="lareset">Zur\u00fccksetzen</button><button data-act="lacopy">YAML</button><button data-act="ladone">Fertig</button></div>` : '');
+      + (this._la ? `${this._laTxt ? `<textarea class="lat" readonly>${esc(laYaml())}</textarea>` : ''}<div class="labar"><span>Kreise ziehen</span><button data-act="lagrid">Raster ${this._laGrid === false ? 'aus' : 'an'}</button><button data-act="laflip" title="Diese Anordnung auch f\u00fcr ${laOth} \u00fcbernehmen">${this._laFlip ? '\u00dcbernommen' : 'f\u00fcr ' + laOth + ' \u00fcbernehmen'}</button><button data-act="laundo"${this._laU && this._laU.length ? '' : ' disabled'} title="Letzten Schritt zur\u00fccknehmen">R\u00fcckg\u00e4ngig</button><button data-act="lareset" title="Alle Positionen dieser Ansicht und Ausrichtung verwerfen">Zur\u00fccksetzen</button><button data-act="lacopy">YAML</button><button data-act="ladone">Fertig</button></div>` : '');
     const ttHrs = this._ttHours();
     const ttHtml = c.time_travel === true
       ? (this._ttOn
         ? `<div class="ttbar"><input type="range" class="tts" min="0" max="${ttHrs * 60}" step="5" value="${ttHrs * 60 - (this._ttMin || 0)}"><span class="ttl">${this._ttLabel(this._ttMin || 0)}</span><button data-act="ttnow">Jetzt</button><div class="ttx" data-act="tt" title="Schlie\u00dfen"><ha-icon icon="mdi:close"></ha-icon></div></div>`
         : `<div class="ttbtn" data-act="tt" title="Zeitreise"><ha-icon icon="mdi:history"></ha-icon></div>`)
       : '';
+    // Harte Klammer: waehrend eines Zugs bekommt die Zeichenflaeche exakt die Masse des
+    // letzten ruhenden Durchlaufs. Im Vollbild sitzt der Inhalt mittig - dort verschiebt
+    // schon eine Aenderung von wenigen Pixeln die ganze Karte.
+    if (this._drag) {
+      if (this._vwFin !== undefined) VW = this._vwFin;
+      if (this._vhFin !== undefined) VH = this._vhFin;
+    } else {
+      this._vwFin = VW;
+      this._vhFin = VH;
+    }
     const extraH = (hdr ? 64 : 0) + (infoOn ? 46 : 0) + (tabsHtml ? 40 : 0);
+    // Im Vollbild haengt die Breite der Zeichenflaeche am Seitenverhaeltnis und der Inhalt ist
+    // mittig gesetzt: aendert es sich beim Ziehen, wandert alles senkrecht. Also festhalten.
+    const arNow = VW / VH;
+    if (!this._drag) this._arHold = arNow;
+    const arUse = this._drag && this._arHold ? this._arHold : arNow;
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; }
+        :host(:fullscreen), :host(:-webkit-full-screen) { background: var(--card-background-color, #111); overflow: auto; }
         ha-card { display: block; padding: 8px; position: relative; }
         ha-card.hasfs, ha-card.haszm { padding-bottom: 42px; }
         ha-card.hasfs.fs, ha-card.haszm.fs { padding-bottom: 0; }
@@ -1841,7 +2204,8 @@ class FlowCardVAW extends HTMLElement {
         .ttbtn { position: absolute; right: 8px; top: 8px; z-index: 6; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: rgba(127, 127, 127, 0.22); color: var(--primary-text-color); cursor: pointer; --mdc-icon-size: 18px; }
         .ttbar { position: absolute; left: 8px; right: 92px; bottom: 6px; z-index: 6; display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 16px; background: var(--card-background-color, #1c1c1c); border: 1px solid rgba(127, 127, 127, 0.45); font-size: 12px; color: var(--primary-text-color); }
         .ttbar .tts { flex: 1; min-width: 60px; accent-color: var(--primary-color, #03a9f4); }
-        .ttbar .ttl { white-space: nowrap; opacity: 0.85; }
+        .ttbar .ttl { white-space: nowrap; opacity: 0.85; flex: none; width: 160px; text-align: right; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+        ha-card.compact .ttbar .ttl { width: 104px; font-size: 11px; }
         .ttbar button { border: 0; border-radius: 12px; padding: 4px 10px; background: var(--primary-color, #03a9f4); color: #fff; cursor: pointer; font: inherit; }
         .ttx { cursor: pointer; display: flex; --mdc-icon-size: 18px; }
         .tab ha-icon, .labtn ha-icon, .ttbtn ha-icon, .ttx ha-icon { position: static; transform: none; pointer-events: none; }
@@ -1855,8 +2219,14 @@ class FlowCardVAW extends HTMLElement {
         .labar { position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 6; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 10px; border-radius: 12px; background: var(--card-background-color, #1c1c1c); border: 1px solid rgba(127, 127, 127, 0.45); font-size: 13px; color: var(--primary-text-color); }
         .labar span { flex: 1; opacity: 0.8; }
         .labar button { border: 0; border-radius: 14px; padding: 6px 12px; background: var(--primary-color, #03a9f4); color: #fff; cursor: pointer; font: inherit; }
+        .labar button[disabled] { opacity: 0.35; cursor: default; }
         .lat { position: absolute; left: 8px; right: 8px; bottom: 62px; z-index: 6; height: 96px; font: 12px monospace; padding: 6px; border-radius: 8px; border: 1px solid rgba(127, 127, 127, 0.5); background: var(--card-background-color, #1c1c1c); color: var(--primary-text-color); resize: none; }
-        ha-card.la g.node, ha-card.la g.stc, ha-card.la g.kid { cursor: move; }
+        ha-card.la g.node, ha-card.la g.stc, ha-card.la g.kid, ha-card.la rect.zf { cursor: move; }
+        ha-card.la rect.zf { stroke-opacity: 0.8; }
+        circle.lnh { fill: var(--primary-color, #03a9f4); fill-opacity: 0.9; stroke: var(--card-background-color, #1c1c1c); stroke-width: 1.5; cursor: move; }
+        circle.lnh:hover { fill-opacity: 1; r: 9; }
+        rect.zfh { cursor: nwse-resize; }
+        rect.zfh[data-h="ne"], rect.zfh[data-h="sw"] { cursor: nesw-resize; }
         ha-card.la g.sw { pointer-events: none; }
         ha-card.la .wrap { touch-action: none; }
         ha-card.la g.node > [id^="c_"] { stroke-dasharray: 7 5; }
@@ -1872,12 +2242,12 @@ class FlowCardVAW extends HTMLElement {
         ha-card.compact .chip { font-size: 11.5px; padding: 2px 8px; }
         ha-card.compact .sp { font-size: 12px; padding: 3px 9px 3px 6px; }
       </style>
-      <ha-card class="${c.fullscreen_button === false ? '' : 'hasfs'}${OPT.zoom ? ' haszm' : ''}${hdr || infoOn ? ' hasx' : ''}${this._la ? ' la' : ''}${c.layout_assistant === true ? ' hasla' : ''}${c.time_travel === true ? ' hastb' : ''}${c.time_travel === true && this._ttOn ? ' hastt' : ''}${this._ttOn ? ' tton' : ''}${OPT.grad ? ' grad' : ''}${OPT.glow ? ' glow' : ''}${OPT.tap ? ' tap' : ''}" style="--ar:${(VW / VH).toFixed(4)};--extra:${extraH}px;--ns:${OPT.ns};--vaw-lim:${this._lim.color};--calm-dim:${c.calm && c.calm.dim !== undefined && !isNaN(Number(c.calm.dim)) ? Math.max(0.2, Math.min(1, Number(c.calm.dim))) : 0.75}">
+      <ha-card class="${c.fullscreen_button === false ? '' : 'hasfs'}${OPT.zoom ? ' haszm' : ''}${hdr || infoOn ? ' hasx' : ''}${this._la ? ' la' : ''}${c.layout_assistant === true ? ' hasla' : ''}${c.time_travel === true ? ' hastb' : ''}${c.time_travel === true && this._ttOn ? ' hastt' : ''}${this._ttOn ? ' tton' : ''}${OPT.grad ? ' grad' : ''}${OPT.glow ? ' glow' : ''}${OPT.tap ? ' tap' : ''}" style="--ar:${arUse.toFixed(4)};--extra:${extraH}px;--ns:${OPT.ns};--vaw-lim:${this._lim.color};--calm-dim:${c.calm && c.calm.dim !== undefined && !isNaN(Number(c.calm.dim)) ? Math.max(0.2, Math.min(1, Number(c.calm.dim))) : 0.75}">
         ${hdr}
         ${tabsHtml}
         <div class="wrap${OPT.zoom ? ' zm' : ''}">
           <div class="zi">
-            <svg viewBox="0 0 ${VW} ${VH}">${defsSvg}${gridSvg}${frameSvg}${paths}${dots}${circles}${kidSvg}${llSvg}${stSvg}${swSvg}${stbSvg}${guideSvg}</svg>
+            <svg viewBox="0 0 ${VW} ${VH}">${defsSvg}${gridSvg}${frameSvg}${paths}${dots}${circles}${kidSvg}${llSvg}${stSvg}${swSvg}${stbSvg}${zfSvg}${lnhSvg}${guideSvg}</svg>
             ${icons}${stIcons}${stbIcons}
           </div>
         </div>
@@ -1894,13 +2264,12 @@ class FlowCardVAW extends HTMLElement {
       if (!l._ll) return;
       const p = this.shadowRoot.getElementById('l_' + l.id);
       const t = this.shadowRoot.getElementById('ll_' + l.id);
-      if (p && t && p.getTotalLength) {
-        try {
-          const q = p.getPointAtLength(p.getTotalLength() * 0.5);
-          t.setAttribute('x', q.x.toFixed(1));
-          t.setAttribute('y', (q.y - 5).toFixed(1));
-        } catch (er) { /* ohne Label-Position */ }
-      }
+      if (!p || !t || !p.getTotalLength) return;
+      try {
+        const q = p.getPointAtLength(p.getTotalLength() * 0.5);
+        t.setAttribute('x', q.x.toFixed(1));
+        t.setAttribute('y', (q.y - 5).toFixed(1));
+      } catch (er) { /* ohne Label-Position */ }
     });
     this._spDirty = true;
     // Skalierung der Zahlen um den eigenen Mittelpunkt (Ursprung in Nutzereinheiten, funktioniert auch in Safari)
@@ -1939,6 +2308,43 @@ class FlowCardVAW extends HTMLElement {
         const p = pt(e);
         if (!p) return;
         const cl = (v) => Math.max(-2000, Math.min(2000, Math.round(v)));
+        // Linien-Ecke: setzt genau diesen rechten Winkel, die andere Ecke bleibt stehen
+        if (d.cn) {
+          const gr = (v) => (this._laGrid === false ? Math.round(v) : Math.round(v / 10) * 10);
+          const nx = gr(d.ox + p[0] - d.sx);
+          const ny = gr(d.oy + p[1] - d.sy);
+          const cur = this._pos[d.key] || {};
+          const keep = d.cn === 1 ? cur.c2 || d.other : cur.c1 || d.other;
+          this._pos[d.key] = d.cn === 1 ? { c1: [nx, ny], c2: [keep[0], keep[1]] } : { c1: [keep[0], keep[1]], c2: [nx, ny] };
+          this._guides = [];
+          if (!this._laRaf) this._laRaf = requestAnimationFrame(() => { this._laRaf = 0; this._render(); });
+          return;
+        }
+        // Zonenrahmen: bewegt bzw. vergroessert nur sich selbst, die Kreise bleiben stehen
+        if (d.zf) {
+          const gr = (v) => (this._laGrid === false ? Math.round(v) : Math.round(v / 10) * 10);
+          const dx = gr(p[0] - d.sx);
+          const dy = gr(p[1] - d.sy);
+          const h = d.handle;
+          let x = d.ox;
+          let y = d.oy;
+          let w = d.ow;
+          let hh = d.oh;
+          if (!h) {
+            x += dx;
+            y += dy;
+          } else {
+            if (h === 'nw' || h === 'sw') { x += dx; w -= dx; } else { w += dx; }
+            if (h === 'nw' || h === 'ne') { y += dy; hh -= dy; } else { hh += dy; }
+          }
+          // Mindestgroesse 60, damit der Rahmen greifbar bleibt
+          w = Math.max(60 - d.bw, w);
+          hh = Math.max(60 - d.bh, hh);
+          this._guides = [];
+          this._pos[d.key] = { x: cl(x), y: cl(y), w: cl(w), h: cl(hh) };
+          if (!this._laRaf) this._laRaf = requestAnimationFrame(() => { this._laRaf = 0; this._render(); });
+          return;
+        }
         let nx = d.ox + p[0] - d.sx;
         let ny = d.oy + p[1] - d.sy;
         this._guides = [];
@@ -1950,7 +2356,7 @@ class FlowCardVAW extends HTMLElement {
             ax = Math.round(ax / 10) * 10;
             ay = Math.round(ay / 10) * 10;
           }
-          const others = Object.keys(this._abs || {}).filter((k) => k !== d.key).map((k) => this._abs[k]);
+          const others = Object.keys(this._abs || {}).filter((k) => k !== d.key && k.indexOf('ln_') !== 0).map((k) => this._abs[k]);
           let gx = null;
           let gy = null;
           others.forEach((o) => {
@@ -1976,11 +2382,74 @@ class FlowCardVAW extends HTMLElement {
         window.removeEventListener('pointercancel', this._laUp);
         this._drag = null;
         this._guides = [];
+        // Nur angetippt, nichts bewegt: den gemerkten Schritt wieder verwerfen
+        if (this._laU && this._laU.length && this._laU[this._laU.length - 1] === JSON.stringify(this._pos || {})) this._laU.pop();
         this._posSave();
         this._render();
       };
       sr0.addEventListener('pointerdown', (e) => {
         if (!this._la) return;
+        const zf = e.target.closest ? e.target.closest('rect.zf, rect.zfh') : null;
+        if (zf) {
+          e.stopPropagation();
+          e.preventDefault();
+          const p0 = pt(e);
+          if (!p0) return;
+          const zk = zf.getAttribute('data-zf');
+          const key = 'zf_' + zk;
+          const cur = (this._pos && this._pos[key]) || {};
+          const ab = (this._zfAbs && this._zfAbs[key]) || { bw: 0, bh: 0 };
+          this._pos = this._pos || {};
+          this._laPush();
+          this._drag = {
+            key,
+            zf: true,
+            handle: zf.classList.contains('zfh') ? zf.getAttribute('data-h') : null,
+            sx: p0[0],
+            sy: p0[1],
+            ox: Number(cur.x) || 0,
+            oy: Number(cur.y) || 0,
+            ow: Number(cur.w) || 0,
+            oh: Number(cur.h) || 0,
+            bw: ab.bw || 0,
+            bh: ab.bh || 0,
+          };
+          window.addEventListener('pointermove', this._laMv);
+          window.addEventListener('pointerup', this._laUp);
+          window.addEventListener('pointercancel', this._laUp);
+          return;
+        }
+        const lh = e.target.closest ? e.target.closest('circle.lnh') : null;
+        if (lh) {
+          e.stopPropagation();
+          e.preventDefault();
+          const p1 = pt(e);
+          if (!p1) return;
+          const lid = lh.getAttribute('data-ln');
+          const cn = Number(lh.getAttribute('data-c')) === 2 ? 2 : 1;
+          const key = 'ln_' + lid;
+          const g = (this._lnG && this._lnG[lid]) || null;
+          if (!g) return;
+          this._pos = this._pos || {};
+          this._laPush();
+          const mine = cn === 1 ? g[0] : g[1];
+          const other = cn === 1 ? g[1] : g[0];
+          this._drag = {
+            key,
+            cn,
+            other: [other[0], other[1]],
+            sx: p1[0],
+            sy: p1[1],
+            ox: mine[0],
+            oy: mine[1],
+            bx: null,
+            by: null,
+          };
+          window.addEventListener('pointermove', this._laMv);
+          window.addEventListener('pointerup', this._laUp);
+          window.addEventListener('pointercancel', this._laUp);
+          return;
+        }
         const g = e.target.closest ? e.target.closest('g.node, g.stc, g.kid') : null;
         if (!g || !g.id || (g.id.indexOf('g_') !== 0 && g.id.indexOf('stc_') !== 0 && g.id.indexOf('kg_') !== 0)) return;
         e.stopPropagation();
@@ -1991,11 +2460,20 @@ class FlowCardVAW extends HTMLElement {
         const cur = (this._pos && this._pos[key]) || {};
         this._pos = this._pos || {};
         const ab = (this._abs && this._abs[key]) || null;
+        this._laPush();
         this._drag = { key, sx: p[0], sy: p[1], ox: Number(cur.x) || 0, oy: Number(cur.y) || 0, bx: ab ? ab.x - (Number(cur.x) || 0) : null, by: ab ? ab.y - (Number(cur.y) || 0) : null };
         window.addEventListener('pointermove', this._laMv);
         window.addEventListener('pointerup', this._laUp);
         window.addEventListener('pointercancel', this._laUp);
       }, true);
+      sr0.addEventListener('pointerdown', (e) => {
+        const t = e.target;
+        if (t && t.classList && t.classList.contains('tts')) this._ttDrag = true;
+      }, true);
+      const ttEnd = () => { this._ttDrag = false; };
+      window.addEventListener('pointerup', ttEnd);
+      window.addEventListener('pointercancel', ttEnd);
+      this._ttEnd = ttEnd;
       sr0.addEventListener('input', (e) => {
         const t = e.target;
         if (!t || !t.classList || !t.classList.contains('tts')) return;
@@ -2030,7 +2508,12 @@ class FlowCardVAW extends HTMLElement {
             this._laTxt = false;
           } else if (a === 'lagrid') {
             this._laGrid = this._laGrid === false;
+          } else if (a === 'laflip') {
+            this._posCopyOther();
+          } else if (a === 'laundo') {
+            this._laUndo();
           } else if (a === 'lareset') {
+            this._laPush();
             this._posSave(true);
             this._applyCfg();
           } else if (a === 'lacopy') {
@@ -2038,7 +2521,7 @@ class FlowCardVAW extends HTMLElement {
             try { navigator.clipboard.writeText(this._laYamlText()); } catch (er) { /* Textfeld zum Kopieren wird angezeigt */ }
           }
           this._render();
-        } else if (this._la && e.target.closest && e.target.closest('g.node, g.stc, g.kid')) {
+        } else if (this._la && e.target.closest && e.target.closest('g.node, g.stc, g.kid, rect.zf, rect.zfh, circle.lnh')) {
           e.stopPropagation();
         }
       }, true);
@@ -3494,6 +3977,26 @@ const VAW_THEMES = {
   blueprint: { background: 'grid', circle_style: 'flat', node_shape: 'square' },
 };
 const VAW_THEME_OPTS = [['none', 'Keines'], ['neon_night', 'Neon-Nacht'], ['glass_aurora', 'Glas-Polarlicht'], ['minimal_light', 'Minimal hell'], ['hex_tech', 'Hex-Tech'], ['cozy_sunset', 'Gem\u00fctlich (Abendrot)'], ['ocean_calm', 'Ozean ruhig'], ['blueprint', 'Bauplan']];
+// Eintrag aus positions: x/y bei jedem Kreis, w/h zusaetzlich beim Zonenrahmen (zf_*)
+function vawPosEntry(q) {
+  // Linie mit zwei gesetzten Ecken
+  if (Array.isArray(q.c1) && Array.isArray(q.c2)) {
+    return {
+      c1: [Math.round(Number(q.c1[0]) || 0), Math.round(Number(q.c1[1]) || 0)],
+      c2: [Math.round(Number(q.c2[0]) || 0), Math.round(Number(q.c2[1]) || 0)],
+    };
+  }
+  const o = { x: Number(q.x) || 0, y: Number(q.y) || 0 };
+  if (q.w !== undefined || q.h !== undefined) {
+    o.w = Number(q.w) || 0;
+    o.h = Number(q.h) || 0;
+  }
+  return o;
+}
+function vawPosUsed(q) {
+  return !!(q && (q.x || q.y || q.w || q.h || (Array.isArray(q.c1) && Array.isArray(q.c2))));
+}
+
 // Sicherheit: Werte aus der Konfiguration landen in HTML, daher immer maskieren (auch Anf\u00fchrungszeichen f\u00fcr Attribute)
 function vawEsc(t) {
   return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -4029,7 +4532,7 @@ class FlowCardVAWEditor extends HTMLElement {
     if (this._form) return;
     const note = document.createElement('div');
     note.style.cssText = 'font-size:12px;opacity:.7;margin:0 0 12px';
-    note.textContent = 'Flow Card Version 1.2.2 \u00b7 Ansichten (views) und Positionen (positions) sowie Sonderf\u00e4lle (secondary, extra, Namen der Ringe usw.) bleiben erhalten und lassen sich im Code-Editor (\u201eYAML\u201c) erg\u00e4nzen.';
+    note.textContent = 'Flow Card Version 1.2.3 \u00b7 Ansichten (views) und Positionen (positions) sowie Sonderf\u00e4lle (secondary, extra, Namen der Ringe usw.) bleiben erhalten und lassen sich im Code-Editor (\u201eYAML\u201c) erg\u00e4nzen.';
     const form = document.createElement('ha-form');
     form.schema = VAW_SCHEMA;
     form.hass = this._hass;
@@ -4048,13 +4551,13 @@ class FlowCardVAWEditor extends HTMLElement {
 }
 customElements.define('flow-card-vaw-editor', FlowCardVAWEditor);
 
-console.info('%c FLOW-CARD-VAW %c Version 1.2.2 ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
+console.info('%c FLOW-CARD-VAW %c Version 1.2.3 ', 'background:#03a9f4;color:#fff', 'background:#333;color:#fff');
 customElements.define('flow-card-vaw', FlowCardVAW);
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: 'flow-card-vaw',
   name: 'Flow Card (W / A / V)',
-  description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.2.2)',
+  description: 'Energiefluss mit Leistung, Strom und Spannung (Version 1.2.3)',
   preview: true,
   documentationURL: 'https://github.com/xFirefliesx/flow-card-vaw',
 });

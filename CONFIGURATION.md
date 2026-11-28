@@ -424,11 +424,17 @@ Sammelkreis Rest:
 
 Layout-Assistent (zusätzlich):
   # Raster (10) und Hilfslinien über die Leiste unten; jeder kleine Kreis ist einzeln verschiebbar
+  # Die Positionen gehören zum Benutzer (nicht zum Gerät) und werden getrennt für hochkant und
+  # quer gespeichert. Der Knopf "→ quer" bzw. "→ hochkant" übernimmt die Anordnung in die
+  # andere Ausrichtung. Ein zweites offenes Fenster holt den neuen Stand von selbst nach.
   positions:
     solar_c0: {x: -40, y: 20}   # Panel 1 von Solar (solar_c0, solar_c1 ...)
     gph_1: {x: 0, y: 30}        # Phase 2 am Netz (gph_0, gph_1 ...)
     bat_c0: {x: 10, y: 0}       # Batterie 1
     st_0_0: {x: 0, y: -200}     # Status-Kreis (Eintrag 0, Sensor 0)
+    zf_z0: {x: 0, y: 40, w: 120, h: 0}  # Rahmen der Zone 1: verschieben (x/y) und groesser/kleiner (w/h)
+  # Den Rahmen im Assistenten einfach ziehen; an den vier Ecken sitzen Griffe zum Aufziehen.
+  # Die Kreise darin bleiben dabei stehen.
 
 Sicherheit: Farben dürfen nur Namen, #hex, rgb()/hsl()/var() und Verläufe enthalten, andere Werte werden ignoriert.
 ```

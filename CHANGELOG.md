@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.2.3
+
+Positions across devices
+
+- Fix: positions saved on one device were lost as soon as a second device saved. Each device pushed its whole local store to Home Assistant, so the last writer wiped the other one's layouts. A save now re-reads the stored state and writes only its own entries into it
+- Positions are picked up while the card stays open: at most every 15 seconds, and immediately when the window is focused again. A change made on the phone shows up on the desktop without `Ctrl+F5`
+- Resetting a layout reaches the other devices too now; it leaves a delete marker instead of only dropping the entry locally
+
+Layout assistant
+
+- New: `Rückgängig` takes back the last single step - one circle, one frame, one line corner - instead of discarding the whole arrangement. Up to forty steps; a tap that moves nothing does not use one up
+- New: `für hochkant übernehmen` copies the current arrangement to the other orientation. Positions stay stored per orientation, the button is the shortcut when both should look alike
+- New: the dashed zone frame can be dragged on its own and resized at its four corners; the circles inside stay where they are. Stored as `zf_<zone>` with `x`, `y`, `w`, `h`, where `w`/`h` are changes against the automatic box, so the frame keeps following the circles
+- New: every line carries two handles, one on each of its right-angle corners. Dragging a corner sets that bend, and the side a line leaves or enters a circle on follows from where its corner sits - put the first corner below the circle and the line leaves downwards. The anchor point slides along the circle's edge with it. Stored as `ln_<line>` with `c1: [x, y]` and `c2: [x, y]`
+- Fix: the card jumped and rescaled several times a second while something was dragged, visible as a crawling grid. The canvas now keeps exactly the size it had before the drag and is measured again only on release
+- Fix: opening or closing the assistant, and switching views, dropped the card out of full screen. Full screen is requested on the card element itself now, not on the `ha-card` inside it that is rebuilt on every redraw
+
+Lines
+
+- Lines leave a circle from the middle of its side, evenly spread around that middle, 18px apart where the circle is big enough. They used to be counted separately upwards and downwards, which left the bundle off-centre, and the gap shrank with every additional line
+- Fix: lines crossed each other on the way to the devices. The one heading furthest out turns closest to the circle now and the middle ones turn last, so no line has to cross another's vertical run
+
+Other
+
+- Fix: in full screen the card is opaque even when its background is set to transparent. The dashboard and other cards used to show through, including their time-travel bars
+- Fix: the time-travel label no longer changes the slider's width when it switches from "Jetzt" to a date, so the slider stops jumping out from under the pointer. It also holds still while the slider is being dragged
+- Fix: icons of status circles drifted below their circles when a dragged status circle reached past the lower edge of the card
+
 ## 1.2.2
 
 - `layout` can now be set per window orientation: `layout: {v: vertical, h: horizontal}` picks the vertical build-down layout while the window is portrait and the horizontal one while it is landscape. `portrait`/`hochkant` and `landscape`/`quer` work as key names too
